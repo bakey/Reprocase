@@ -52,6 +52,9 @@ The complete Reprocase system is intended to provide:
   intermediate state to test a fix or a different agent policy.
 - **Production-to-eval workflows** — turn sanitized production failures and traces into durable
   regression cases.
+- **Agent-readable feedback** — structured failure briefs projected from run evidence, so agents
+  can consume eval results and improve themselves. Feedback teaches how to fix without leaking
+  the grader's answer key.
 
 Reprocase is meant to stay model-, framework-, and tool-provider agnostic. Agent SDKs and tracing
 platforms should be able to integrate through adapters instead of becoming hard dependencies.
