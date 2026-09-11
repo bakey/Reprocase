@@ -1,0 +1,118 @@
+"""Versioned M0 input contracts."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+CASE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
+SEMVER_PATTERN = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class Metadata(StrictModel):
+    id: str
+    version: str
+    title: str = Field(min_length=1, max_length=200)
+    tags: tuple[str, ...] = ()
+
+    @field_validator("id")
+    @classmethod
+    def valid_id(cls, value: str) -> str:
+        if not CASE_ID_PATTERN.fullmatch(value):
+            raise ValueError("must match [a-z0-9][a-z0-9._-]{2,127}")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def valid_version(cls, value: str) -> str:
+        if not SEMVER_PATTERN.fullmatch(value):
+            raise ValueError("must be a semantic version such as 0.1.0")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def unique_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("must not contain duplicate tags")
+        return value
+
+
+class TaskSpec(StrictModel):
+    input: dict[str, Any]
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class FakeAgentConfig(StrictModel):
+    outcome: Literal["success", "error"] = "success"
+    output: Any = None
+    message: str | None = None
+
+
+class AgentSpec(StrictModel):
+    adapter: Literal["fake"]
+    config: FakeAgentConfig = Field(default_factory=FakeAgentConfig)
+
+
+class EnvironmentRef(StrictModel):
+    driver: Literal["fake"]
+    definition: Path
+
+
+class BudgetSpec(StrictModel):
+    wall_time_seconds: Annotated[int, Field(ge=1, le=3600)] = 120
+    max_tool_calls: Annotated[int, Field(ge=0, le=10_000)] = 20
+
+
+class FakeGraderSpec(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["fake"]
+    outcome: Literal["PASS", "FAIL", "ERROR"] = "PASS"
+    explanation: str = Field(min_length=1, max_length=2_000)
+    critical: bool = True
+
+
+class OutputSpec(StrictModel):
+    retain_environment_on_failure: bool = False
+
+
+class EvalCase(StrictModel):
+    api_version: Literal["reprocase.dev/v0"]
+    kind: Literal["EvalCase"]
+    metadata: Metadata
+    task: TaskSpec
+    agent: AgentSpec
+    environment: EnvironmentRef
+    budgets: BudgetSpec = Field(default_factory=BudgetSpec)
+    graders: tuple[FakeGraderSpec, ...] = Field(min_length=1)
+    output: OutputSpec = Field(default_factory=OutputSpec)
+
+    @field_validator("graders")
+    @classmethod
+    def unique_grader_ids(cls, value: tuple[FakeGraderSpec, ...]) -> tuple[FakeGraderSpec, ...]:
+        ids = [grader.id for grader in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("grader ids must be unique")
+        return value
+
+
+class FakeEnvironmentConfig(StrictModel):
+    healthy: bool = True
+    fail_on_start: bool = False
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentDefinition(StrictModel):
+    api_version: Literal["reprocase.dev/environment/v0"]
+    driver: Literal["fake"]
+    config: FakeEnvironmentConfig = Field(default_factory=FakeEnvironmentConfig)

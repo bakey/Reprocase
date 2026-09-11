@@ -1,0 +1,29 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: fake.contract.fail
+  version: 0.1.0
+  title: M0 failing contract fixture
+  tags: [m0, fake]
+
+task:
+  input:
+    message: Demonstrate an evaluation failure.
+
+agent:
+  adapter: fake
+  config:
+    outcome: success
+    output:
+      message: Deterministic but incorrect output.
+
+environment:
+  driver: fake
+  definition: environment.yaml
+
+graders:
+  - id: fake-assertion
+    type: fake
+    outcome: FAIL
+    explanation: The fixture intentionally represents an agent evaluation failure.

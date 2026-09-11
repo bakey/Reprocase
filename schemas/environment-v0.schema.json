@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "FakeEnvironmentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "fail_on_start": {
+          "default": false,
+          "title": "Fail On Start",
+          "type": "boolean"
+        },
+        "healthy": {
+          "default": true,
+          "title": "Healthy",
+          "type": "boolean"
+        },
+        "initial_state": {
+          "additionalProperties": true,
+          "title": "Initial State",
+          "type": "object"
+        }
+      },
+      "title": "FakeEnvironmentConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "api_version": {
+      "const": "reprocase.dev/environment/v0",
+      "title": "Api Version",
+      "type": "string"
+    },
+    "config": {
+      "$ref": "#/$defs/FakeEnvironmentConfig"
+    },
+    "driver": {
+      "const": "fake",
+      "title": "Driver",
+      "type": "string"
+    }
+  },
+  "required": [
+    "api_version",
+    "driver"
+  ],
+  "title": "EnvironmentDefinition",
+  "type": "object"
+}

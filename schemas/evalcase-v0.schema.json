@@ -1,0 +1,256 @@
+{
+  "$defs": {
+    "AgentSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "const": "fake",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/FakeAgentConfig"
+        }
+      },
+      "required": [
+        "adapter"
+      ],
+      "title": "AgentSpec",
+      "type": "object"
+    },
+    "BudgetSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max_tool_calls": {
+          "default": 20,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "wall_time_seconds": {
+          "default": 120,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Wall Time Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "BudgetSpec",
+      "type": "object"
+    },
+    "EnvironmentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "definition": {
+          "format": "path",
+          "title": "Definition",
+          "type": "string"
+        },
+        "driver": {
+          "const": "fake",
+          "title": "Driver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "driver",
+        "definition"
+      ],
+      "title": "EnvironmentRef",
+      "type": "object"
+    },
+    "FakeAgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "outcome": {
+          "default": "success",
+          "enum": [
+            "success",
+            "error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "output": {
+          "default": null,
+          "title": "Output"
+        }
+      },
+      "title": "FakeAgentConfig",
+      "type": "object"
+    },
+    "FakeGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "explanation": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "outcome": {
+          "default": "PASS",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "ERROR"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "type": {
+          "const": "fake",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "explanation"
+      ],
+      "title": "FakeGraderSpec",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "title"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "OutputSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "retain_environment_on_failure": {
+          "default": false,
+          "title": "Retain Environment On Failure",
+          "type": "boolean"
+        }
+      },
+      "title": "OutputSpec",
+      "type": "object"
+    },
+    "TaskSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "additionalProperties": true,
+          "title": "Context",
+          "type": "object"
+        },
+        "input": {
+          "additionalProperties": true,
+          "title": "Input",
+          "type": "object"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "title": "TaskSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "$ref": "#/$defs/AgentSpec"
+    },
+    "api_version": {
+      "const": "reprocase.dev/v0",
+      "title": "Api Version",
+      "type": "string"
+    },
+    "budgets": {
+      "$ref": "#/$defs/BudgetSpec"
+    },
+    "environment": {
+      "$ref": "#/$defs/EnvironmentRef"
+    },
+    "graders": {
+      "items": {
+        "$ref": "#/$defs/FakeGraderSpec"
+      },
+      "minItems": 1,
+      "title": "Graders",
+      "type": "array"
+    },
+    "kind": {
+      "const": "EvalCase",
+      "title": "Kind",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "output": {
+      "$ref": "#/$defs/OutputSpec"
+    },
+    "task": {
+      "$ref": "#/$defs/TaskSpec"
+    }
+  },
+  "required": [
+    "api_version",
+    "kind",
+    "metadata",
+    "task",
+    "agent",
+    "environment",
+    "graders"
+  ],
+  "title": "EvalCase",
+  "type": "object"
+}

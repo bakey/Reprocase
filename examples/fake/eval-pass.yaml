@@ -1,0 +1,35 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: fake.contract.pass
+  version: 0.1.0
+  title: M0 passing contract fixture
+  tags: [m0, fake]
+
+task:
+  input:
+    message: Process the fake order.
+  context:
+    locale: en-US
+
+agent:
+  adapter: fake
+  config:
+    outcome: success
+    output:
+      message: Fake order processed.
+
+environment:
+  driver: fake
+  definition: environment.yaml
+
+budgets:
+  wall_time_seconds: 30
+  max_tool_calls: 0
+
+graders:
+  - id: fake-success
+    type: fake
+    outcome: PASS
+    explanation: The deterministic M0 fixture passed.

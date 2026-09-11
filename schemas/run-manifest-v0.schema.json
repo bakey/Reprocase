@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "CaseIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "title": "Digest",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "path"
+      ],
+      "title": "CaseIdentity",
+      "type": "object"
+    },
+    "SourceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "python": {
+          "title": "Python",
+          "type": "string"
+        }
+      },
+      "required": [
+        "python",
+        "platform"
+      ],
+      "title": "SourceIdentity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "case": {
+      "$ref": "#/$defs/CaseIdentity"
+    },
+    "components": {
+      "default": [
+        "fake_environment",
+        "fake_agent",
+        "fake_grader"
+      ],
+      "items": {
+        "enum": [
+          "fake_environment",
+          "fake_agent",
+          "fake_grader"
+        ],
+        "type": "string"
+      },
+      "title": "Components",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "reproducibility_level": {
+      "const": "R0",
+      "default": "R0",
+      "title": "Reproducibility Level",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "reprocase.run-manifest/v0",
+      "default": "reprocase.run-manifest/v0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceIdentity"
+    }
+  },
+  "required": [
+    "run_id",
+    "case",
+    "source",
+    "budget"
+  ],
+  "title": "RunManifest",
+  "type": "object"
+}

@@ -1,0 +1,29 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: fake.contract.invalid
+  version: 0.1.0
+  title: M0 invalid-run contract fixture
+  tags: [m0, fake]
+
+task:
+  input:
+    message: Demonstrate a grader error.
+
+agent:
+  adapter: fake
+  config:
+    outcome: success
+    output:
+      message: This output cannot receive a valid verdict.
+
+environment:
+  driver: fake
+  definition: environment.yaml
+
+graders:
+  - id: broken-fake-grader
+    type: fake
+    outcome: ERROR
+    explanation: The fixture intentionally represents a grader execution error.

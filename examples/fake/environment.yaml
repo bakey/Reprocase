@@ -1,0 +1,13 @@
+api_version: reprocase.dev/environment/v0
+driver: fake
+config:
+  healthy: true
+  fail_on_start: false
+  initial_state:
+    customers:
+      CUST-1001:
+        name: Example Customer
+    orders:
+      ORD-1001:
+        status: paid
+        refundable_amount: 49.90
