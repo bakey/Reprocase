@@ -15,11 +15,6 @@ The long-term goal is to make agent evaluation behave more like software testing
 reproducible, state-aware, debuggable, automatable in CI, and independent of any one model or agent
 framework.
 
-> **Project status:** pre-alpha. Phase 1 / M0 is complete and provides the contracts, run lifecycle,
-> evidence recording, and a deterministic fake end-to-end runner. Docker environments, real agent
-> adapters, state graders, multi-trial evaluation, and replay are planned milestones—not current
-> capabilities.
-
 ## Why Reprocase
 
 Evaluating an agent is harder than evaluating a model response. A plausible final answer does not
@@ -173,25 +168,6 @@ testable increment.
 Beyond Phase 1, the roadmap includes enterprise workflow eval packs, multi-trial statistics,
 perturbation testing, regression gates, dependency recording and replay, trajectory branching, and a
 production trace-to-EvalCase workflow.
-
-## What works today
-
-M0 currently includes:
-
-- strict `EvalCase v0` and `Environment v0` schemas;
-- static and executable validation with precise field and path errors;
-- a deterministic digest over a case and its referenced environment definition;
-- run IDs, lifecycle state machine, and stable failure taxonomy;
-- atomic local storage for `manifest.json` and `result.json`;
-- append-only `events.jsonl` with monotonic sequence numbers;
-- fake Environment, Agent, and Grader components for deterministic pass, fail, and invalid runs;
-- committed JSON Schemas, contract tests, type checking, linting, and CI.
-
-The fake components are contract fixtures, not production implementations. M0 deliberately has no
-Docker or model dependency: its job is to stabilize the boundary between future components and
-prove that interrupted or failed runs still produce useful evidence.
-
-See [the M0 design notes](docs/m0.md) for its exact acceptance criteria and design decisions.
 
 ## Quickstart for the current M0
 
