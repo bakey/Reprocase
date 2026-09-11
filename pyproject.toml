@@ -42,6 +42,10 @@ packages = ["src/reprocase"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]
+markers = [
+  "docker: requires a running Docker daemon",
+  "slow: long-running acceptance tests (deselect with -m 'not slow')",
+]
 
 [tool.ruff]
 target-version = "py312"

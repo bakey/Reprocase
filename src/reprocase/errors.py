@@ -18,8 +18,17 @@ class FailureCode(StrEnum):
     CASE_SCHEMA_INVALID = "CASE_SCHEMA_INVALID"
     CASE_REFERENCE_MISSING = "CASE_REFERENCE_MISSING"
     CASE_REFERENCE_OUTSIDE_ROOT = "CASE_REFERENCE_OUTSIDE_ROOT"
+    CASE_UNSUPPORTED_DRIVER = "CASE_UNSUPPORTED_DRIVER"
     ENV_FAKE_START_FAILED = "ENV_FAKE_START_FAILED"
     ENV_FAKE_HEALTHCHECK_FAILED = "ENV_FAKE_HEALTHCHECK_FAILED"
+    ENV_COMPOSE_UNSAFE = "ENV_COMPOSE_UNSAFE"
+    ENV_COMPOSE_INVALID = "ENV_COMPOSE_INVALID"
+    ENV_START_FAILED = "ENV_START_FAILED"
+    ENV_RESTORE_FAILED = "ENV_RESTORE_FAILED"
+    ENV_HEALTHCHECK_FAILED = "ENV_HEALTHCHECK_FAILED"
+    ENV_STATE_CAPTURE_FAILED = "ENV_STATE_CAPTURE_FAILED"
+    ENV_STATE_INVALID = "ENV_STATE_INVALID"
+    ENV_TEARDOWN_FAILED = "ENV_TEARDOWN_FAILED"
     AGENT_FAKE_EXECUTION_FAILED = "AGENT_FAKE_EXECUTION_FAILED"
     GRADER_FAKE_EXECUTION_FAILED = "GRADER_FAKE_EXECUTION_FAILED"
     GRADER_ASSERTION_FAILED = "GRADER_ASSERTION_FAILED"
@@ -59,6 +68,22 @@ class CaseValidationError(ReprocaseError):
             message,
             code=code,
             attribution=FailureAttribution.CASE_ERROR,
+            details=details,
+        )
+
+
+class EnvironmentDriverError(ReprocaseError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: FailureCode,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=code,
+            attribution=FailureAttribution.ENVIRONMENT_ERROR,
             details=details,
         )
 

@@ -1,5 +1,105 @@
 {
   "$defs": {
+    "CanonicalizationSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "remove_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Remove Paths",
+          "type": "array"
+        },
+        "sort_arrays_by": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Sort Arrays By",
+          "type": "object"
+        }
+      },
+      "title": "CanonicalizationSpec",
+      "type": "object"
+    },
+    "ComposeEnvironmentDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "api_version": {
+          "const": "reprocase.dev/environment/v0",
+          "title": "Api Version",
+          "type": "string"
+        },
+        "compose": {
+          "$ref": "#/$defs/ComposeSpec"
+        },
+        "driver": {
+          "const": "docker_compose",
+          "title": "Driver",
+          "type": "string"
+        },
+        "healthcheck": {
+          "$ref": "#/$defs/HealthcheckSpec"
+        },
+        "restore": {
+          "$ref": "#/$defs/RestoreSpec"
+        },
+        "state": {
+          "$ref": "#/$defs/StateSpec"
+        }
+      },
+      "required": [
+        "api_version",
+        "driver",
+        "restore",
+        "healthcheck",
+        "state"
+      ],
+      "title": "ComposeEnvironmentDefinition",
+      "type": "object"
+    },
+    "ComposeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "port_variables": {
+          "additionalProperties": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "title": "Port Variables",
+          "type": "object"
+        },
+        "project_prefix": {
+          "default": "reprocase",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+          "title": "Project Prefix",
+          "type": "string"
+        },
+        "startup_timeout_seconds": {
+          "default": 60,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Startup Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "ComposeSpec",
+      "type": "object"
+    },
     "FakeEnvironmentConfig": {
       "additionalProperties": false,
       "properties": {
@@ -21,28 +121,173 @@
       },
       "title": "FakeEnvironmentConfig",
       "type": "object"
+    },
+    "FakeEnvironmentDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "api_version": {
+          "const": "reprocase.dev/environment/v0",
+          "title": "Api Version",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/FakeEnvironmentConfig"
+        },
+        "driver": {
+          "const": "fake",
+          "title": "Driver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_version",
+        "driver"
+      ],
+      "title": "FakeEnvironmentDefinition",
+      "type": "object"
+    },
+    "HealthcheckSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "interval_seconds": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Interval Seconds",
+          "type": "number"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "type": {
+          "const": "http",
+          "default": "http",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "HealthcheckSpec",
+      "type": "object"
+    },
+    "RestoreSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Command",
+          "type": "array"
+        },
+        "service": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Service",
+          "type": "string"
+        },
+        "strategy": {
+          "const": "command",
+          "default": "command",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 60,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "service",
+        "command"
+      ],
+      "title": "RestoreSpec",
+      "type": "object"
+    },
+    "StateCaptureSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Command",
+          "type": "array"
+        },
+        "format": {
+          "const": "json",
+          "default": "json",
+          "title": "Format",
+          "type": "string"
+        },
+        "service": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Service",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 60,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "service",
+        "command"
+      ],
+      "title": "StateCaptureSpec",
+      "type": "object"
+    },
+    "StateSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalization": {
+          "$ref": "#/$defs/CanonicalizationSpec"
+        },
+        "capture": {
+          "$ref": "#/$defs/StateCaptureSpec"
+        }
+      },
+      "required": [
+        "capture"
+      ],
+      "title": "StateSpec",
+      "type": "object"
     }
   },
-  "additionalProperties": false,
-  "properties": {
-    "api_version": {
-      "const": "reprocase.dev/environment/v0",
-      "title": "Api Version",
-      "type": "string"
+  "discriminator": {
+    "mapping": {
+      "docker_compose": "#/$defs/ComposeEnvironmentDefinition",
+      "fake": "#/$defs/FakeEnvironmentDefinition"
     },
-    "config": {
-      "$ref": "#/$defs/FakeEnvironmentConfig"
-    },
-    "driver": {
-      "const": "fake",
-      "title": "Driver",
-      "type": "string"
-    }
+    "propertyName": "driver"
   },
-  "required": [
-    "api_version",
-    "driver"
-  ],
-  "title": "EnvironmentDefinition",
-  "type": "object"
+  "oneOf": [
+    {
+      "$ref": "#/$defs/FakeEnvironmentDefinition"
+    },
+    {
+      "$ref": "#/$defs/ComposeEnvironmentDefinition"
+    }
+  ]
 }

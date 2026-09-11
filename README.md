@@ -159,7 +159,7 @@ testable increment.
 | Milestone | Outcome | Status |
 |---|---|---|
 | M0 — Contracts and run skeleton | Versioned schemas, validation, lifecycle, evidence writer, deterministic fake run | **Complete** |
-| M1 — Reproducible environment | Docker Compose lifecycle, readiness checks, reset, cleanup, environment metadata | Planned |
+| M1 — Reproducible environment | Docker Compose lifecycle, safety precheck, dynamic ports, reset, state digests, cleanup | **Complete** |
 | M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | Planned |
 | M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | Planned |
 | M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | Planned |
@@ -199,6 +199,16 @@ uv run reprocase run examples/fake/eval-fail.yaml
 uv run reprocase run examples/fake/eval-invalid.yaml
 ```
 
+### M1: reproducible environment check
+
+With a running Docker daemon, exercise the real Compose environment lifecycle (start → restore →
+healthcheck → state capture → teardown) and verify that repeated restores yield identical state
+digests:
+
+```bash
+uv run reprocase env-check examples/support-world/environment.yaml --cycles 3
+```
+
 Current CLI exit codes:
 
 | Code | Meaning |
@@ -215,7 +225,8 @@ Current CLI exit codes:
 src/reprocase/     Python package, contracts, runner, recording, and fake adapters
 schemas/           Exported JSON Schemas for public contracts
 examples/fake/     Deterministic M0 examples
-tests/             Contract, runner, recording, schema, and CLI tests
+examples/support-world/  Minimal Compose environment (API, fixture, reset/export commands)
+tests/             Contract, runner, recording, schema, environment, and CLI tests
 docs/              Milestone-specific design notes
 ```
 

@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from reprocase.case.loader import LoadedCase, load_case
-from reprocase.errors import FailureAttribution, FailureCode, ReprocaseError
+from reprocase.case.models import FakeEnvironmentDefinition
+from reprocase.errors import (
+    CaseValidationError,
+    FailureAttribution,
+    FailureCode,
+    ReprocaseError,
+)
 from reprocase.ids import new_run_id
 from reprocase.recording.events import EventRecorder
 from reprocase.results.models import (
@@ -84,6 +90,13 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
     """Validate and execute one M0 fake EvalCase."""
 
     loaded = load_case(case_path)
+    if not isinstance(loaded.environment, FakeEnvironmentDefinition):
+        raise CaseValidationError(
+            "reprocase run supports only the fake environment driver until M2; "
+            "use reprocase env-check for docker_compose environments",
+            code=FailureCode.CASE_UNSUPPORTED_DRIVER,
+            details={"driver": loaded.environment.driver},
+        )
     run_id = new_run_id()
     storage = RunStorage(Path(output_root), run_id)
     identity = _case_identity(loaded)

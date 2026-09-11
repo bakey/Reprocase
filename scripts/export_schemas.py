@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from reprocase.case.models import EnvironmentDefinition, EvalCase
 from reprocase.recording.events import EventEnvelope
 from reprocase.results.models import RunManifest, RunResult
@@ -14,17 +16,17 @@ from reprocase.results.models import RunManifest, RunResult
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "schemas"
 
-SCHEMAS = {
+SCHEMAS: dict[str, Any] = {
     "evalcase-v0.schema.json": EvalCase,
-    "environment-v0.schema.json": EnvironmentDefinition,
+    "environment-v0.schema.json": TypeAdapter(EnvironmentDefinition),
     "event-v0.schema.json": EventEnvelope,
     "run-manifest-v0.schema.json": RunManifest,
     "run-result-v0.schema.json": RunResult,
 }
 
 
-def render_schema(model: type[Any]) -> str:
-    schema = model.model_json_schema()
+def render_schema(model: Any) -> str:
+    schema = model.json_schema() if isinstance(model, TypeAdapter) else model.model_json_schema()
     return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

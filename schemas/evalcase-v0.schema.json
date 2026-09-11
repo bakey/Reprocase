@@ -42,13 +42,29 @@
     "EnvironmentRef": {
       "additionalProperties": false,
       "properties": {
+        "compose_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compose File"
+        },
         "definition": {
           "format": "path",
           "title": "Definition",
           "type": "string"
         },
         "driver": {
-          "const": "fake",
+          "enum": [
+            "fake",
+            "docker_compose"
+          ],
           "title": "Driver",
           "type": "string"
         }

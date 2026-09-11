@@ -21,5 +21,12 @@ def sha256_digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(canonical_json(value)).hexdigest()}"
 
 
-def case_digest(case_data: dict[str, Any], environment_data: dict[str, Any]) -> str:
-    return sha256_digest({"case": case_data, "environment": environment_data})
+def case_digest(
+    case_data: dict[str, Any],
+    environment_data: dict[str, Any],
+    *,
+    extra_files: dict[str, str] | None = None,
+) -> str:
+    return sha256_digest(
+        {"case": case_data, "environment": environment_data, "files": extra_files or {}}
+    )

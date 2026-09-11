@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Annotated
@@ -9,7 +10,8 @@ from typing import Annotated
 import typer
 
 from reprocase.case.loader import load_case
-from reprocase.errors import CaseValidationError, ReprocaseError
+from reprocase.environments.check import load_compose_target, run_environment_check
+from reprocase.errors import CaseValidationError, EnvironmentDriverError, ReprocaseError
 from reprocase.results.models import Verdict
 from reprocase.runner.orchestrator import run_case
 
@@ -99,6 +101,79 @@ def run_command(
         raise typer.Exit(code=1)
     if result.verdict == Verdict.INVALID:
         raise typer.Exit(code=3)
+
+
+@app.command("env-check")
+def env_check_command(
+    target: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, readable=True, resolve_path=True),
+    ],
+    cycles: Annotated[
+        int,
+        typer.Option("--cycles", "-n", min=1, max=1000, help="Lifecycle repetitions."),
+    ] = 1,
+    work_root: Annotated[
+        Path,
+        typer.Option("--work-root", help="Directory for per-cycle env files and logs."),
+    ] = Path(".reprocase/env"),
+    allow_unsafe: Annotated[
+        bool,
+        typer.Option("--allow-unsafe", help="Skip the Compose safety precheck."),
+    ] = False,
+) -> None:
+    """Internal diagnostic: run the environment lifecycle and print state digests."""
+
+    try:
+        definition, compose_file, slug = load_compose_target(target)
+    except CaseValidationError as error:
+        _print_error(error)
+        raise typer.Exit(code=2) from error
+
+    try:
+        report = asyncio.run(
+            run_environment_check(
+                definition,
+                compose_file,
+                cycles=cycles,
+                slug=slug,
+                work_root=work_root,
+                allow_unsafe=allow_unsafe,
+            )
+        )
+    except EnvironmentDriverError as error:
+        _print_error(error)
+        raise typer.Exit(code=3) from error
+
+    for cycle in report.cycles:
+        seconds = cycle.duration_ms / 1000
+        if cycle.failure_code is not None:
+            typer.secho(
+                f"cycle {cycle.cycle:>3}  FAIL [{cycle.failure_code}] "
+                f"{cycle.failure_message}  ({seconds:.1f}s)",
+                fg=typer.colors.RED,
+            )
+        else:
+            typer.echo(f"cycle {cycle.cycle:>3}  {cycle.digest}  ({seconds:.1f}s)")
+
+    if report.failures:
+        first = report.failures[0]
+        typer.secho(
+            f"\nFAILED {len(report.failures)}/{len(report.cycles)} cycle(s); "
+            f"first failure: [{first.failure_code}]",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=3)
+    if not report.digests_identical:
+        typer.secho(
+            f"\nMISMATCH digests differ across {len(report.cycles)} cycle(s)",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+    typer.secho(
+        f"\nOK {len(report.cycles)}/{len(report.cycles)} identical digests: {report.digests[0]}",
+        fg=typer.colors.GREEN,
+    )
 
 
 if __name__ == "__main__":

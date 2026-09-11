@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from reprocase.case.digests import case_digest
 from reprocase.case.models import EnvironmentDefinition, EvalCase
 from reprocase.errors import CaseValidationError, FailureCode
+
+_ENVIRONMENT_ADAPTER: TypeAdapter[EnvironmentDefinition] = TypeAdapter(EnvironmentDefinition)
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class LoadedCase:
     environment_path: Path
     environment: EnvironmentDefinition
     digest: str
+    compose_path: Path | None = None
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -86,7 +89,7 @@ def load_case(path: Path | str) -> LoadedCase:
     environment_path = _resolve_reference(root, case.environment.definition)
     raw_environment = _read_yaml(environment_path)
     try:
-        environment = EnvironmentDefinition.model_validate(raw_environment)
+        environment = _ENVIRONMENT_ADAPTER.validate_python(raw_environment)
     except ValidationError as exc:
         raise _format_validation_error(environment_path, exc) from exc
 
@@ -99,9 +102,22 @@ def load_case(path: Path | str) -> LoadedCase:
             },
         )
 
+    compose_path: Path | None = None
+    extra_files: dict[str, str] = {}
+    if case.environment.compose_file is not None:
+        compose_path = _resolve_reference(root, case.environment.compose_file)
+        try:
+            extra_files["compose_file"] = compose_path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise CaseValidationError(
+                f"Referenced file does not exist: {compose_path}",
+                code=FailureCode.CASE_REFERENCE_MISSING,
+                details={"path": str(compose_path)},
+            ) from exc
+
     normalized_case = case.model_dump(mode="json")
     normalized_environment = environment.model_dump(mode="json")
-    digest = case_digest(normalized_case, normalized_environment)
+    digest = case_digest(normalized_case, normalized_environment, extra_files=extra_files)
     return LoadedCase(
         path=case_path,
         root=root,
@@ -109,4 +125,5 @@ def load_case(path: Path | str) -> LoadedCase:
         environment_path=environment_path,
         environment=environment,
         digest=digest,
+        compose_path=compose_path,
     )

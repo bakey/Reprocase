@@ -65,8 +65,9 @@ class AgentSpec(StrictModel):
 
 
 class EnvironmentRef(StrictModel):
-    driver: Literal["fake"]
+    driver: Literal["fake", "docker_compose"]
     definition: Path
+    compose_file: Path | None = None
 
 
 class BudgetSpec(StrictModel):
@@ -112,7 +113,68 @@ class FakeEnvironmentConfig(StrictModel):
     initial_state: dict[str, Any] = Field(default_factory=dict)
 
 
-class EnvironmentDefinition(StrictModel):
+class ComposeSpec(StrictModel):
+    file: Path | None = None
+    project_prefix: str = Field(default="reprocase", pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    startup_timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 60
+    port_variables: dict[str, Annotated[int, Field(ge=1, le=65535)]] = Field(default_factory=dict)
+
+    @field_validator("port_variables")
+    @classmethod
+    def valid_port_variables(cls, value: dict[str, int]) -> dict[str, int]:
+        for name in value:
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                raise ValueError("port variable names must be upper-case environment names")
+        return value
+
+
+class RestoreSpec(StrictModel):
+    strategy: Literal["command"] = "command"
+    service: str = Field(min_length=1, max_length=128)
+    command: tuple[str, ...] = Field(min_length=1)
+    timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 60
+
+
+class HealthcheckSpec(StrictModel):
+    type: Literal["http"] = "http"
+    url: str = Field(min_length=1, max_length=500)
+    timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 30
+    interval_seconds: Annotated[float, Field(gt=0, le=30)] = 0.5
+
+
+class StateCaptureSpec(StrictModel):
+    service: str = Field(min_length=1, max_length=128)
+    command: tuple[str, ...] = Field(min_length=1)
+    format: Literal["json"] = "json"
+    timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 60
+
+
+class CanonicalizationSpec(StrictModel):
+    remove_paths: tuple[str, ...] = ()
+    sort_arrays_by: dict[str, str] = Field(default_factory=dict)
+
+
+class StateSpec(StrictModel):
+    capture: StateCaptureSpec
+    canonicalization: CanonicalizationSpec = Field(default_factory=CanonicalizationSpec)
+
+
+class FakeEnvironmentDefinition(StrictModel):
     api_version: Literal["reprocase.dev/environment/v0"]
     driver: Literal["fake"]
     config: FakeEnvironmentConfig = Field(default_factory=FakeEnvironmentConfig)
+
+
+class ComposeEnvironmentDefinition(StrictModel):
+    api_version: Literal["reprocase.dev/environment/v0"]
+    driver: Literal["docker_compose"]
+    compose: ComposeSpec = Field(default_factory=ComposeSpec)
+    restore: RestoreSpec
+    healthcheck: HealthcheckSpec
+    state: StateSpec
+
+
+type EnvironmentDefinition = Annotated[
+    FakeEnvironmentDefinition | ComposeEnvironmentDefinition,
+    Field(discriminator="driver"),
+]
