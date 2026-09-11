@@ -49,3 +49,15 @@ def test_failure_path_can_still_write_result() -> None:
     machine.transition(RunState.COMPLETED_WITH_ERROR)
 
     assert machine.current == RunState.COMPLETED_WITH_ERROR
+
+
+def test_cancelled_path_can_reach_cancelled_terminal_state() -> None:
+    machine = RunStateMachine()
+    machine.transition(RunState.VALIDATING)
+    machine.transition(RunState.CANCELLED)
+    machine.transition(RunState.COLLECTING_ARTIFACTS)
+    machine.transition(RunState.TEARING_DOWN)
+    machine.transition(RunState.WRITING_RESULT)
+    machine.transition(RunState.CANCELLED)
+
+    assert machine.current == RunState.CANCELLED

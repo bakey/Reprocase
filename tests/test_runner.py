@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from reprocase.errors import FailureAttribution, FailureCode
-from reprocase.results.models import RunStatus, Verdict
+from reprocase.results.models import RunState, RunStatus, Verdict
+from reprocase.runner.fakes import FakeAgent
 from reprocase.runner.orchestrator import run_case
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,3 +140,26 @@ graders:
     assert result.primary_failure is not None
     assert result.primary_failure.code == FailureCode.AGENT_FAKE_EXECUTION_FAILED
     assert result.graders[0].status == "PASS"
+
+
+def test_cancellation_writes_result_and_reaches_cancelled_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted_run(self: object, task: dict[str, object]) -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FakeAgent, "run", interrupted_run)
+
+    result = run_case(ROOT / "examples/fake/eval-pass.yaml", tmp_path)
+    run_dir = tmp_path / result.run_id
+
+    assert result.status == RunStatus.CANCELLED
+    assert result.verdict == Verdict.INVALID
+    assert result.final_state == RunState.CANCELLED
+    assert result.primary_failure is not None
+    assert result.primary_failure.code == FailureCode.RUN_CANCELLED
+    assert (run_dir / "result.json").is_file()
+
+    rows = _event_rows(run_dir)
+    assert rows[-1]["type"] == "run.completed"
+    assert any(row["type"] == "run.cancelled" for row in rows)
