@@ -369,3 +369,29 @@ async def run(task, tools, context):
     # the unredacted output is still available in the structured result
     assert result.agent_output["credentials"]["api_key"] == "topsecret-value"
     assert _residual_resources() == []
+
+
+def test_lazy_importing_agent_passes_end_to_end(tmp_path: Path) -> None:
+    """Execution-time isolation: function-body relative and dynamic imports."""
+
+    output = tmp_path / "runs"
+    result = run_case(AGENT_CASE, output, agent_override="agents.lazy_refund_agent:run")
+
+    assert result.verdict == Verdict.PASS
+    assert result.agent_output == {"message": "退款 RF-9001 已完成"}
+    assert _residual_resources() == []
+
+
+def test_two_cases_same_package_run_sequentially(tmp_path: Path) -> None:
+    """Two runs with the same top-level package in one process stay isolated."""
+
+    first = run_case(AGENT_CASE, tmp_path / "first", agent_override="agents.lazy_refund_agent:run")
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["agent"]["entrypoint"] = "agents.lazy_refund_agent:run"
+
+    second = run_case(_variant_case(tmp_path, mutate), tmp_path / "second")
+
+    assert first.verdict == Verdict.PASS
+    assert second.verdict == Verdict.PASS
+    assert _residual_resources() == []

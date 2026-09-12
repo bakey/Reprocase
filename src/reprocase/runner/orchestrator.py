@@ -20,7 +20,7 @@ from reprocase.case.models import (
     FakeEnvironmentDefinition,
     FakeGraderSpec,
 )
-from reprocase.entrypoints import code_identity, load_callable
+from reprocase.entrypoints import ImportIsolation, code_identity, load_callable
 from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
 from reprocase.environments.protocol import CommandResult, EnvironmentHandle
 from reprocase.errors import (
@@ -255,42 +255,46 @@ async def _run_scripted_agent(
     seed: int,
 ) -> None:
     recorder = session.recorder
-    actor = load_actor(entrypoint, loaded.environment_path.parent)
+    import_root = loaded.environment_path.parent
+    with ImportIsolation(import_root):
+        actor = load_actor(entrypoint, import_root)
 
-    session.transition(RunState.RUNNING_AGENT)
-    recorder.emit("agent.started", source="scripted_actor", payload={"entrypoint": entrypoint})
-    base_url = handle.service_urls[sorted(handle.service_urls)[0]] if handle.service_urls else None
-    context = ActorContext(
-        run_id=run_id,
-        task=loaded.case.task.input,
-        base_url=base_url,
-        service_urls=handle.service_urls,
-        ports=handle.ports,
-        seed=seed,
-    )
-    try:
-        draft.agent_output = await asyncio.to_thread(actor, context)
-        recorder.emit(
-            "agent.completed",
-            source="scripted_actor",
-            payload={"output": redact(draft.agent_output)},
+        session.transition(RunState.RUNNING_AGENT)
+        recorder.emit("agent.started", source="scripted_actor", payload={"entrypoint": entrypoint})
+        base_url = (
+            handle.service_urls[sorted(handle.service_urls)[0]] if handle.service_urls else None
         )
-    except Exception as exc:  # actor failures are agent failures, never infra failures
-        message = f"Scripted actor raised {type(exc).__name__}: {exc}"
-        draft.agent_error = message
-        draft.failures.append(
-            FailureRecord(
-                attribution=FailureAttribution.AGENT_FAILURE,
-                code=FailureCode.AGENT_EXCEPTION,
-                message=message,
-                details={"entrypoint": entrypoint},
+        context = ActorContext(
+            run_id=run_id,
+            task=loaded.case.task.input,
+            base_url=base_url,
+            service_urls=handle.service_urls,
+            ports=handle.ports,
+            seed=seed,
+        )
+        try:
+            draft.agent_output = await asyncio.to_thread(actor, context)
+            recorder.emit(
+                "agent.completed",
+                source="scripted_actor",
+                payload={"output": redact(draft.agent_output)},
             )
-        )
-        recorder.emit(
-            "agent.failed",
-            source="scripted_actor",
-            payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-        )
+        except Exception as exc:  # actor failures are agent failures, never infra failures
+            message = f"Scripted actor raised {type(exc).__name__}: {exc}"
+            draft.agent_error = message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=FailureCode.AGENT_EXCEPTION,
+                    message=message,
+                    details={"entrypoint": entrypoint},
+                )
+            )
+            recorder.emit(
+                "agent.failed",
+                source="scripted_actor",
+                payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+            )
 
 
 async def _run_python_agent(
@@ -307,138 +311,142 @@ async def _run_python_agent(
     tools_spec = loaded.case.tools
     assert tools_spec is not None  # enforced by EvalCase validation
 
-    provider = load_callable(tools_spec.provider, import_root)
-    supplied = list(provider(handle))
-    validate_tools(supplied, tools_spec.allow)  # provider defects -> CASE_ERROR/INVALID
-    registry = ToolRegistry(supplied)
-    broker = ToolBroker(
-        registry,
-        allow=tools_spec.allow,
-        max_calls=loaded.case.budgets.max_tool_calls,
-        tool_timeout_seconds=float(loaded.case.budgets.tool_timeout_seconds),
-        recorder=recorder,
-    )
-    adapter = PythonAgentAdapter(entrypoint, import_root)
+    # Import isolation spans provider loading, provider execution, adapter
+    # loading, and the agent run itself: case code may import lazily at any
+    # point inside that span.
+    with ImportIsolation(import_root):
+        provider = load_callable(tools_spec.provider, import_root)
+        supplied = list(provider(handle))
+        validate_tools(supplied, tools_spec.allow)  # provider defects -> CASE_ERROR/INVALID
+        registry = ToolRegistry(supplied)
+        broker = ToolBroker(
+            registry,
+            allow=tools_spec.allow,
+            max_calls=loaded.case.budgets.max_tool_calls,
+            tool_timeout_seconds=float(loaded.case.budgets.tool_timeout_seconds),
+            recorder=recorder,
+        )
+        adapter = PythonAgentAdapter(entrypoint, import_root)
 
-    async def emit_agent(payload: dict[str, Any]) -> None:
-        event_type = "agent.model.usage" if "usage" in payload else "agent.message"
-        recorder.emit(event_type, source="python_agent", payload=redact(payload))
+        async def emit_agent(payload: dict[str, Any]) -> None:
+            event_type = "agent.model.usage" if "usage" in payload else "agent.message"
+            recorder.emit(event_type, source="python_agent", payload=redact(payload))
 
-    context = AgentContext(
-        run_id=run_id,
-        seed=seed,
-        fixed_clock=None,
-        tool_names=broker.tool_names,
-        emit=emit_agent,
-    )
-    wall_time = loaded.case.budgets.wall_time_seconds
-    session.transition(RunState.RUNNING_AGENT)
-    recorder.emit(
-        "agent.started",
-        source="python_agent",
-        payload={
-            "entrypoint": entrypoint,
-            "tools": list(broker.tool_names),
-            "budget": {
-                "wall_time_seconds": wall_time,
-                "max_tool_calls": loaded.case.budgets.max_tool_calls,
-                "tool_timeout_seconds": loaded.case.budgets.tool_timeout_seconds,
+        context = AgentContext(
+            run_id=run_id,
+            seed=seed,
+            fixed_clock=None,
+            tool_names=broker.tool_names,
+            emit=emit_agent,
+        )
+        wall_time = loaded.case.budgets.wall_time_seconds
+        session.transition(RunState.RUNNING_AGENT)
+        recorder.emit(
+            "agent.started",
+            source="python_agent",
+            payload={
+                "entrypoint": entrypoint,
+                "tools": list(broker.tool_names),
+                "budget": {
+                    "wall_time_seconds": wall_time,
+                    "max_tool_calls": loaded.case.budgets.max_tool_calls,
+                    "tool_timeout_seconds": loaded.case.budgets.tool_timeout_seconds,
+                },
             },
-        },
-    )
-    model_usage: Usage | None = None
-    try:
-        async with asyncio.timeout(wall_time) as timer:
-            agent_result = await adapter.run(loaded.case.task.input, broker, context)
-        draft.agent_output = agent_result.output
-        model_usage = agent_result.usage
-        recorder.emit(
-            "agent.completed",
-            source="python_agent",
-            payload={"output": redact(draft.agent_output), "summary": agent_result.summary},
         )
-    except TimeoutError as exc:
-        if timer.expired():
-            message = f"Agent exceeded its wall time of {wall_time}s"
-            code = FailureCode.AGENT_TIMEOUT
-            event_type = "agent.timed_out"
-            payload: dict[str, Any] = {
-                "wall_time_seconds": wall_time,
-                "tool_calls": broker.calls_made,
-            }
-        else:
-            # the agent (or its SDK) raised TimeoutError itself: an ordinary
-            # agent exception, not a wall-time expiry
-            message = f"Agent raised TimeoutError: {exc}"
-            code = FailureCode.AGENT_EXCEPTION
-            event_type = "agent.failed"
-            payload = {"code": FailureCode.AGENT_EXCEPTION, "message": message}
-        draft.agent_error = message
-        draft.failures.append(
-            FailureRecord(
-                attribution=FailureAttribution.AGENT_FAILURE,
-                code=code,
-                message=message,
-                details={"entrypoint": entrypoint},
+        model_usage: Usage | None = None
+        try:
+            async with asyncio.timeout(wall_time) as timer:
+                agent_result = await adapter.run(loaded.case.task.input, broker, context)
+            draft.agent_output = agent_result.output
+            model_usage = agent_result.usage
+            recorder.emit(
+                "agent.completed",
+                source="python_agent",
+                payload={"output": redact(draft.agent_output), "summary": agent_result.summary},
             )
-        )
-        recorder.emit(event_type, source="python_agent", payload=payload)
-    except ReprocaseError as exc:
-        if exc.attribution != FailureAttribution.AGENT_FAILURE:
-            raise  # case/environment defects must not be re-labeled as agent failures
-        # Structured failures escaping the agent (tool errors, invalid output)
-        draft.agent_error = exc.message
-        draft.failures.append(
-            FailureRecord(
-                attribution=FailureAttribution.AGENT_FAILURE,
-                code=exc.code,
-                message=exc.message,
-                details=exc.details,
+        except TimeoutError as exc:
+            if timer.expired():
+                message = f"Agent exceeded its wall time of {wall_time}s"
+                code = FailureCode.AGENT_TIMEOUT
+                event_type = "agent.timed_out"
+                payload: dict[str, Any] = {
+                    "wall_time_seconds": wall_time,
+                    "tool_calls": broker.calls_made,
+                }
+            else:
+                # the agent (or its SDK) raised TimeoutError itself: an ordinary
+                # agent exception, not a wall-time expiry
+                message = f"Agent raised TimeoutError: {exc}"
+                code = FailureCode.AGENT_EXCEPTION
+                event_type = "agent.failed"
+                payload = {"code": FailureCode.AGENT_EXCEPTION, "message": message}
+            draft.agent_error = message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=code,
+                    message=message,
+                    details={"entrypoint": entrypoint},
+                )
             )
-        )
-        recorder.emit(
-            "agent.failed",
-            source="python_agent",
-            payload={"code": exc.code, "message": exc.message},
-        )
-    except Exception as exc:  # untrusted-shape but trusted-code agent bugs
-        message = f"Agent raised {type(exc).__name__}: {exc}"
-        draft.agent_error = message
-        draft.failures.append(
-            FailureRecord(
-                attribution=FailureAttribution.AGENT_FAILURE,
-                code=FailureCode.AGENT_EXCEPTION,
-                message=message,
-                details={"entrypoint": entrypoint},
+            recorder.emit(event_type, source="python_agent", payload=payload)
+        except ReprocaseError as exc:
+            if exc.attribution != FailureAttribution.AGENT_FAILURE:
+                raise  # case/environment defects must not be re-labeled as agent failures
+            # Structured failures escaping the agent (tool errors, invalid output)
+            draft.agent_error = exc.message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=exc.code,
+                    message=exc.message,
+                    details=exc.details,
+                )
             )
-        )
-        recorder.emit(
-            "agent.failed",
-            source="python_agent",
-            payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-        )
+            recorder.emit(
+                "agent.failed",
+                source="python_agent",
+                payload={"code": exc.code, "message": exc.message},
+            )
+        except Exception as exc:  # untrusted-shape but trusted-code agent bugs
+            message = f"Agent raised {type(exc).__name__}: {exc}"
+            draft.agent_error = message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=FailureCode.AGENT_EXCEPTION,
+                    message=message,
+                    details={"entrypoint": entrypoint},
+                )
+            )
+            recorder.emit(
+                "agent.failed",
+                source="python_agent",
+                payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+            )
 
-    if broker.budget_exceeded and not any(
-        failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
-    ):
-        message = f"Tool call budget exhausted after {broker.calls_made} calls"
-        draft.agent_error = draft.agent_error or message
-        draft.failures.append(
-            FailureRecord(
-                attribution=FailureAttribution.AGENT_FAILURE,
-                code=FailureCode.AGENT_BUDGET_EXCEEDED,
-                message=message,
-                details={"tool_calls": broker.calls_made},
+        if broker.budget_exceeded and not any(
+            failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
+        ):
+            message = f"Tool call budget exhausted after {broker.calls_made} calls"
+            draft.agent_error = draft.agent_error or message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=FailureCode.AGENT_BUDGET_EXCEEDED,
+                    message=message,
+                    details={"tool_calls": broker.calls_made},
+                )
             )
-        )
 
-    draft.usage = Usage(
-        tool_calls=broker.calls_made,
-        model_calls=model_usage.model_calls if model_usage else None,
-        input_tokens=model_usage.input_tokens if model_usage else None,
-        output_tokens=model_usage.output_tokens if model_usage else None,
-        cost_usd=model_usage.cost_usd if model_usage else None,
-    )
+        draft.usage = Usage(
+            tool_calls=broker.calls_made,
+            model_calls=model_usage.model_calls if model_usage else None,
+            input_tokens=model_usage.input_tokens if model_usage else None,
+            output_tokens=model_usage.output_tokens if model_usage else None,
+            cost_usd=model_usage.cost_usd if model_usage else None,
+        )
 
 
 async def _execute_compose(

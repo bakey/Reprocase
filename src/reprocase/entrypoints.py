@@ -1,16 +1,30 @@
-"""Shared ``module:function`` entrypoint loading for trusted local code.
+"""Import isolation for trusted local code (agents, actors, tool providers).
 
-``importlib.import_module`` caches by module name in ``sys.modules``, so two
-EvalCases living in different roots that both define ``agents.main`` would
-collide: the second load would silently return the first root's module. To
-keep every root isolated, the loader temporarily evicts any cached modules
-under the entrypoint's top-level package, imports fresh from the requested
-root, then restores the previous ``sys.modules`` entries. The returned
-callable keeps referencing the freshly loaded module even after its
-``sys.modules`` entries are restored.
+Two different problems need two scopes:
 
-The loader mutates ``sys.path``/``sys.modules`` and is therefore not
-thread-safe; the runner performs loads sequentially in one thread.
+- **Load-time isolation** is enough for validation: the module must import
+  cleanly from its own root without colliding with a same-named module from
+  another root.
+- **Execution-time isolation** is required for actually running the code:
+  agent/provider functions may import lazily inside their bodies
+  (``from .helper import x``, ``importlib.import_module("agents.other")``),
+  and by then the load-time context is long gone. Relative imports resolve
+  through ``sys.modules['<package>']`` and absolute self-imports through
+  ``sys.path`` — both must point at the case's own root for the whole
+  load + provider-creation + execution span.
+
+``ImportIsolation`` is a reentrant context manager covering that span: on
+entry it shadows (saves and evicts) every cached module whose top-level
+package exists as an importable in the root, and puts the root on
+``sys.path``; on exit it evicts the modules imported during the span,
+restores the shadowed ones, and removes the path entry. ``load_callable``
+detects an already-active isolation for the same root and then imports
+plainly inside it; standalone callers (validation) get a short-lived
+isolation covering just the import.
+
+The mechanism mutates process-global import state, so runs of cases sharing
+top-level package names must execute sequentially in one process (the CLI
+runs one case at a time).
 """
 
 from __future__ import annotations
@@ -20,13 +34,61 @@ import importlib
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 from reprocase.errors import CaseValidationError, FailureCode
 from reprocase.results.models import CodeIdentity
 
+_ACTIVE: list[ImportIsolation] = []
 
-def load_callable(entrypoint: str, import_root: Path) -> Callable[..., Any]:
+
+class ImportIsolation:
+    """Reentrant import context spanning load and execution of case code."""
+
+    def __init__(self, import_root: Path) -> None:
+        self.root = import_root.resolve()
+        self._tops: set[str] = set()
+        self._shadowed: dict[str, ModuleType] = {}
+
+    def local_top_levels(self) -> set[str]:
+        tops: set[str] = set()
+        if self.root.is_dir():
+            for entry in self.root.iterdir():
+                if entry.suffix == ".py":
+                    tops.add(entry.stem)
+                elif entry.is_dir() and (entry / "__init__.py").is_file():
+                    tops.add(entry.name)
+        return tops
+
+    def __enter__(self) -> ImportIsolation:
+        self._tops = self.local_top_levels()
+        for name in [name for name in sys.modules if name.split(".", 1)[0] in self._tops]:
+            self._shadowed[name] = sys.modules.pop(name)
+        sys.path.insert(0, str(self.root))
+        _ACTIVE.append(self)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        # everything still cached under the local tops was imported during
+        # this span: evict it so the next case starts from a clean slate
+        for name in [name for name in sys.modules if name.split(".", 1)[0] in self._tops]:
+            del sys.modules[name]
+        sys.modules.update(self._shadowed)
+        if str(self.root) in sys.path:
+            sys.path.remove(str(self.root))
+        if _ACTIVE and _ACTIVE[-1] is self:
+            _ACTIVE.pop()
+        elif self in _ACTIVE:
+            _ACTIVE.remove(self)
+
+
+def _active_for(root: Path) -> bool:
+    resolved = root.resolve()
+    return any(isolation.root == resolved for isolation in _ACTIVE)
+
+
+def _import_and_resolve(entrypoint: str, import_root: Path) -> Callable[..., Any]:
     module_name, separator, function_name = entrypoint.partition(":")
     if not separator or not module_name or not function_name:
         raise CaseValidationError(
@@ -35,15 +97,10 @@ def load_callable(entrypoint: str, import_root: Path) -> Callable[..., Any]:
             details={"entrypoint": entrypoint},
         )
     root = str(import_root.resolve())
-    top_level = module_name.split(".", 1)[0]
-    shadowed = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == top_level or name.startswith(f"{top_level}.")
-    }
-    for name in shadowed:
-        del sys.modules[name]
-    sys.path.insert(0, root)
+    inserted = False
+    if root not in sys.path:
+        sys.path.insert(0, root)
+        inserted = True
     try:
         try:
             module = importlib.import_module(module_name)
@@ -54,13 +111,8 @@ def load_callable(entrypoint: str, import_root: Path) -> Callable[..., Any]:
                 details={"entrypoint": entrypoint, "import_root": root},
             ) from exc
     finally:
-        sys.path.remove(root)
-        # evict this root's fresh entries and restore the shadowed ones
-        for name in [
-            name for name in sys.modules if name == top_level or name.startswith(f"{top_level}.")
-        ]:
-            del sys.modules[name]
-        sys.modules.update(shadowed)
+        if inserted:
+            sys.path.remove(root)
     target = getattr(module, function_name, None)
     if not callable(target):
         raise CaseValidationError(
@@ -69,6 +121,21 @@ def load_callable(entrypoint: str, import_root: Path) -> Callable[..., Any]:
             details={"entrypoint": entrypoint},
         )
     return cast(Callable[..., Any], target)
+
+
+def load_callable(entrypoint: str, import_root: Path) -> Callable[..., Any]:
+    """Load ``module:function`` from ``import_root``.
+
+    Inside an active ``ImportIsolation`` for the same root this imports
+    plainly (modules stay cached until the span ends, so execution-time lazy
+    imports keep working). Standalone callers get a short-lived isolation
+    covering only the import itself.
+    """
+
+    if _active_for(import_root):
+        return _import_and_resolve(entrypoint, import_root)
+    with ImportIsolation(import_root):
+        return _import_and_resolve(entrypoint, import_root)
 
 
 def module_file(module_name: str, import_root: Path) -> Path | None:
