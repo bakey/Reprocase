@@ -65,6 +65,33 @@ class CaseIdentity(StrictOutputModel):
 class SourceIdentity(StrictOutputModel):
     python: str
     platform: str
+    git_commit: str | None = None
+    git_dirty: bool | None = None
+
+
+class CodeIdentity(StrictOutputModel):
+    """Digest of the code behind an entrypoint (relative paths only, §6.2)."""
+
+    path: str
+    sha256: str
+
+
+class AgentIdentity(StrictOutputModel):
+    adapter: str
+    entrypoint: str | None = None
+    code: CodeIdentity | None = None
+    provider: str | None = None
+    provider_code: CodeIdentity | None = None
+
+
+class Usage(StrictOutputModel):
+    """Observed usage; unknown model metrics stay null, never zero (§13.3)."""
+
+    tool_calls: int = Field(default=0, ge=0)
+    model_calls: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
 
 
 class ArtifactRef(StrictOutputModel):
@@ -90,6 +117,8 @@ class RunManifest(StrictOutputModel):
     case: CaseIdentity
     source: SourceIdentity
     budget: dict[str, int]
+    seed: int = 0
+    agent: AgentIdentity | None = None
     reproducibility_level: Literal["R0", "R1"] = "R0"
     components: tuple[
         Literal[
@@ -99,6 +128,8 @@ class RunManifest(StrictOutputModel):
             "compose_environment",
             "scripted_actor",
             "deterministic_graders",
+            "python_agent",
+            "tool_broker",
         ],
         ...,
     ] = (
@@ -151,6 +182,7 @@ class RunResult(StrictOutputModel):
     duration_ms: int = Field(ge=0)
     reproducibility_level: Literal["R0", "R1"] = "R0"
     agent_output: Any = None
+    usage: Usage | None = None
     states: tuple[StateSnapshot, ...] = ()
     state_diff: ArtifactRef | None = None
     graders: tuple[GraderResult, ...] = ()

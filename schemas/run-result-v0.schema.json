@@ -125,6 +125,13 @@
         "ENV_TEARDOWN_FAILED",
         "AGENT_FAKE_EXECUTION_FAILED",
         "AGENT_EXCEPTION",
+        "AGENT_TIMEOUT",
+        "AGENT_OUTPUT_INVALID",
+        "AGENT_BUDGET_EXCEEDED",
+        "TOOL_NOT_ALLOWED",
+        "TOOL_ARGUMENT_INVALID",
+        "TOOL_TIMEOUT",
+        "TOOL_EXECUTION_FAILED",
         "GRADER_FAKE_EXECUTION_FAILED",
         "GRADER_ASSERTION_FAILED",
         "GRADER_EXECUTION_ERROR",
@@ -331,6 +338,72 @@
       "title": "StateSnapshot",
       "type": "object"
     },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "Observed usage; unknown model metrics stay null, never zero (§13.3).",
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "model_calls": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Calls"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "tool_calls": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    },
     "Verdict": {
       "enum": [
         "PASS",
@@ -443,6 +516,17 @@
     },
     "status": {
       "$ref": "#/$defs/RunStatus"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "verdict": {
       "$ref": "#/$defs/Verdict"
