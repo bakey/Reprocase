@@ -67,6 +67,16 @@ class SourceIdentity(StrictOutputModel):
     platform: str
 
 
+class Usage(StrictOutputModel):
+    """Observed usage; unknown model metrics stay null, never zero (§13.3)."""
+
+    tool_calls: int = 0
+    model_calls: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+
+
 class ArtifactRef(StrictOutputModel):
     media_type: str
     path: str
@@ -90,6 +100,7 @@ class RunManifest(StrictOutputModel):
     case: CaseIdentity
     source: SourceIdentity
     budget: dict[str, int]
+    seed: int = 0
     reproducibility_level: Literal["R0", "R1"] = "R0"
     components: tuple[
         Literal[
@@ -99,6 +110,8 @@ class RunManifest(StrictOutputModel):
             "compose_environment",
             "scripted_actor",
             "deterministic_graders",
+            "python_agent",
+            "tool_broker",
         ],
         ...,
     ] = (
@@ -151,6 +164,7 @@ class RunResult(StrictOutputModel):
     duration_ms: int = Field(ge=0)
     reproducibility_level: Literal["R0", "R1"] = "R0"
     agent_output: Any = None
+    usage: Usage | None = None
     states: tuple[StateSnapshot, ...] = ()
     state_diff: ArtifactRef | None = None
     graders: tuple[GraderResult, ...] = ()

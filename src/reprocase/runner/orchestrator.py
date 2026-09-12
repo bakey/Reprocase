@@ -12,12 +12,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from reprocase.agents.protocol import AgentContext
+from reprocase.agents.python_adapter import PythonAgentAdapter
 from reprocase.case.loader import LoadedCase, load_case
 from reprocase.case.models import (
     ComposeEnvironmentDefinition,
     FakeEnvironmentDefinition,
     FakeGraderSpec,
 )
+from reprocase.entrypoints import load_callable
 from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
 from reprocase.environments.protocol import CommandResult, EnvironmentHandle
 from reprocase.errors import (
@@ -46,12 +49,16 @@ from reprocase.results.models import (
     RunStatus,
     SourceIdentity,
     StateSnapshot,
+    Usage,
     Verdict,
 )
 from reprocase.results.storage import RunStorage
 from reprocase.runner.fakes import FakeAgent, FakeEnvironment, FakeGrader
 from reprocase.runner.scripted import ActorContext, load_actor
 from reprocase.runner.state_machine import RunStateMachine
+from reprocase.tools.broker import ToolBroker
+from reprocase.tools.redaction import redact
+from reprocase.tools.registry import ToolRegistry
 
 
 class _RunDraft:
@@ -60,6 +67,7 @@ class _RunDraft:
         self.graders: list[GraderResult] = []
         self.agent_output: Any = None
         self.agent_error: str | None = None
+        self.usage: Usage | None = None
         self.states: list[StateSnapshot] = []
         self.state_diff_ref: ArtifactRef | None = None
         self.artifacts: list[ArtifactRef] = []
@@ -234,6 +242,188 @@ def _execute_fake(
             recorder.emit("environment.teardown.completed", source="fake_environment")
 
 
+async def _run_scripted_agent(
+    session: _RunSession,
+    loaded: LoadedCase,
+    draft: _RunDraft,
+    run_id: str,
+    entrypoint: str,
+    handle: EnvironmentHandle,
+    seed: int,
+) -> None:
+    recorder = session.recorder
+    actor = load_actor(entrypoint, loaded.environment_path.parent)
+
+    session.transition(RunState.RUNNING_AGENT)
+    recorder.emit("agent.started", source="scripted_actor", payload={"entrypoint": entrypoint})
+    base_url = handle.service_urls[sorted(handle.service_urls)[0]] if handle.service_urls else None
+    context = ActorContext(
+        run_id=run_id,
+        task=loaded.case.task.input,
+        base_url=base_url,
+        service_urls=handle.service_urls,
+        ports=handle.ports,
+        seed=seed,
+    )
+    try:
+        draft.agent_output = await asyncio.to_thread(actor, context)
+        recorder.emit(
+            "agent.completed",
+            source="scripted_actor",
+            payload={"output": draft.agent_output},
+        )
+    except Exception as exc:  # actor failures are agent failures, never infra failures
+        message = f"Scripted actor raised {type(exc).__name__}: {exc}"
+        draft.agent_error = message
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.AGENT_FAILURE,
+                code=FailureCode.AGENT_EXCEPTION,
+                message=message,
+                details={"entrypoint": entrypoint},
+            )
+        )
+        recorder.emit(
+            "agent.failed",
+            source="scripted_actor",
+            payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+        )
+
+
+async def _run_python_agent(
+    session: _RunSession,
+    loaded: LoadedCase,
+    draft: _RunDraft,
+    run_id: str,
+    entrypoint: str,
+    handle: EnvironmentHandle,
+    seed: int,
+) -> None:
+    recorder = session.recorder
+    import_root = loaded.environment_path.parent
+    tools_spec = loaded.case.tools
+    assert tools_spec is not None  # enforced by EvalCase validation
+
+    provider = load_callable(tools_spec.provider, import_root)
+    registry = ToolRegistry(list(provider(handle)))
+    broker = ToolBroker(
+        registry,
+        allow=tools_spec.allow,
+        max_calls=loaded.case.budgets.max_tool_calls,
+        tool_timeout_seconds=float(loaded.case.budgets.tool_timeout_seconds),
+        recorder=recorder,
+    )
+    adapter = PythonAgentAdapter(entrypoint, import_root)
+
+    async def emit_agent(payload: dict[str, Any]) -> None:
+        event_type = "agent.model.usage" if "usage" in payload else "agent.message"
+        recorder.emit(event_type, source="python_agent", payload=redact(payload))
+
+    context = AgentContext(
+        run_id=run_id,
+        seed=seed,
+        fixed_clock=None,
+        tool_names=broker.tool_names,
+        emit=emit_agent,
+    )
+    wall_time = loaded.case.budgets.wall_time_seconds
+    session.transition(RunState.RUNNING_AGENT)
+    recorder.emit(
+        "agent.started",
+        source="python_agent",
+        payload={
+            "entrypoint": entrypoint,
+            "tools": list(broker.tool_names),
+            "budget": {
+                "wall_time_seconds": wall_time,
+                "max_tool_calls": loaded.case.budgets.max_tool_calls,
+                "tool_timeout_seconds": loaded.case.budgets.tool_timeout_seconds,
+            },
+        },
+    )
+    model_usage: Usage | None = None
+    try:
+        async with asyncio.timeout(wall_time):
+            agent_result = await adapter.run(loaded.case.task.input, broker, context)
+        draft.agent_output = agent_result.output
+        model_usage = agent_result.usage
+        recorder.emit(
+            "agent.completed",
+            source="python_agent",
+            payload={"output": draft.agent_output, "summary": agent_result.summary},
+        )
+    except TimeoutError:
+        message = f"Agent exceeded its wall time of {wall_time}s"
+        draft.agent_error = message
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.AGENT_FAILURE,
+                code=FailureCode.AGENT_TIMEOUT,
+                message=message,
+                details={"entrypoint": entrypoint, "wall_time_seconds": wall_time},
+            )
+        )
+        recorder.emit(
+            "agent.timed_out",
+            source="python_agent",
+            payload={"wall_time_seconds": wall_time, "tool_calls": broker.calls_made},
+        )
+    except ReprocaseError as exc:
+        # Structured failures escaping the agent (tool errors, invalid output)
+        draft.agent_error = exc.message
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.AGENT_FAILURE,
+                code=exc.code,
+                message=exc.message,
+                details=exc.details,
+            )
+        )
+        recorder.emit(
+            "agent.failed",
+            source="python_agent",
+            payload={"code": exc.code, "message": exc.message},
+        )
+    except Exception as exc:  # untrusted-shape but trusted-code agent bugs
+        message = f"Agent raised {type(exc).__name__}: {exc}"
+        draft.agent_error = message
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.AGENT_FAILURE,
+                code=FailureCode.AGENT_EXCEPTION,
+                message=message,
+                details={"entrypoint": entrypoint},
+            )
+        )
+        recorder.emit(
+            "agent.failed",
+            source="python_agent",
+            payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+        )
+
+    if broker.budget_exceeded and not any(
+        failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
+    ):
+        message = f"Tool call budget exhausted after {broker.calls_made} calls"
+        draft.agent_error = draft.agent_error or message
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.AGENT_FAILURE,
+                code=FailureCode.AGENT_BUDGET_EXCEEDED,
+                message=message,
+                details={"tool_calls": broker.calls_made},
+            )
+        )
+
+    draft.usage = Usage(
+        tool_calls=broker.calls_made,
+        model_calls=model_usage.model_calls if model_usage else None,
+        input_tokens=model_usage.input_tokens if model_usage else None,
+        output_tokens=model_usage.output_tokens if model_usage else None,
+        cost_usd=model_usage.cost_usd if model_usage else None,
+    )
+
+
 async def _execute_compose(
     session: _RunSession,
     loaded: LoadedCase,
@@ -243,6 +433,7 @@ async def _execute_compose(
     draft: _RunDraft,
     run_id: str,
     entrypoint: str,
+    seed: int,
 ) -> None:
     recorder = session.recorder
     artifacts = ArtifactStore(storage.run_dir)
@@ -296,43 +487,10 @@ async def _execute_compose(
         )
 
         session.transition(RunState.LOADING_AGENT_AND_TOOLS)
-        actor = load_actor(entrypoint, loaded.environment_path.parent)
-
-        session.transition(RunState.RUNNING_AGENT)
-        recorder.emit("agent.started", source="scripted_actor", payload={"entrypoint": entrypoint})
-        base_url = (
-            handle.service_urls[sorted(handle.service_urls)[0]] if handle.service_urls else None
-        )
-        context = ActorContext(
-            run_id=run_id,
-            task=loaded.case.task.input,
-            base_url=base_url,
-            service_urls=handle.service_urls,
-            ports=handle.ports,
-        )
-        try:
-            draft.agent_output = await asyncio.to_thread(actor, context)
-            recorder.emit(
-                "agent.completed",
-                source="scripted_actor",
-                payload={"output": draft.agent_output},
-            )
-        except Exception as exc:  # actor failures are agent failures, never infra failures
-            message = f"Scripted actor raised {type(exc).__name__}: {exc}"
-            draft.agent_error = message
-            draft.failures.append(
-                FailureRecord(
-                    attribution=FailureAttribution.AGENT_FAILURE,
-                    code=FailureCode.AGENT_EXCEPTION,
-                    message=message,
-                    details={"entrypoint": entrypoint},
-                )
-            )
-            recorder.emit(
-                "agent.failed",
-                source="scripted_actor",
-                payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-            )
+        if loaded.case.agent.adapter == "scripted":
+            await _run_scripted_agent(session, loaded, draft, run_id, entrypoint, handle, seed)
+        else:
+            await _run_python_agent(session, loaded, draft, run_id, entrypoint, handle, seed)
 
         session.transition(RunState.CAPTURING_FINAL_STATE)
         final_snapshot, final_document = await states.capture("final")
@@ -421,7 +579,7 @@ async def _execute_compose(
 
 
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
-    """Return the effective scripted entrypoint, or None for the fake flow."""
+    """Return the effective agent entrypoint, or None for the fake flow."""
 
     adapter = loaded.case.agent.adapter
     if isinstance(loaded.environment, FakeEnvironmentDefinition):
@@ -432,16 +590,16 @@ def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str
                 details={"adapter": adapter},
             )
         return None
-    if adapter != "scripted":
+    if adapter not in {"scripted", "python"}:
         raise CaseValidationError(
-            "docker_compose runs require the scripted agent adapter in M2",
+            "docker_compose runs require the scripted or python agent adapter",
             code=FailureCode.CASE_UNSUPPORTED_DRIVER,
             details={"adapter": adapter},
         )
     entrypoint = agent_override or loaded.case.agent.entrypoint
     if entrypoint is None:
         raise CaseValidationError(
-            "scripted runs require agent.entrypoint or an --agent override",
+            f"{adapter} runs require agent.entrypoint or an --agent override",
             code=FailureCode.CASE_ENTRYPOINT_INVALID,
         )
     return entrypoint
@@ -452,6 +610,7 @@ def run_case(
     output_root: Path | str = ".reprocase/runs",
     *,
     agent_override: str | None = None,
+    seed: int = 0,
 ) -> RunResult:
     """Validate and execute one EvalCase (fake or docker_compose driver)."""
 
@@ -473,8 +632,19 @@ def run_case(
             case=identity,
             source=source,
             budget=budget,
+            seed=seed,
             reproducibility_level="R0",
             components=("fake_environment", "fake_agent", "fake_grader"),
+        )
+    elif loaded.case.agent.adapter == "scripted":
+        manifest = RunManifest(
+            run_id=run_id,
+            case=identity,
+            source=source,
+            budget=budget,
+            seed=seed,
+            reproducibility_level="R1",
+            components=("compose_environment", "scripted_actor", "deterministic_graders"),
         )
     else:
         manifest = RunManifest(
@@ -482,8 +652,14 @@ def run_case(
             case=identity,
             source=source,
             budget=budget,
+            seed=seed,
             reproducibility_level="R1",
-            components=("compose_environment", "scripted_actor", "deterministic_graders"),
+            components=(
+                "compose_environment",
+                "python_agent",
+                "tool_broker",
+                "deterministic_graders",
+            ),
         )
     storage.write_manifest(manifest)
     recorder = EventRecorder(storage.events_path, run_id)
@@ -520,6 +696,7 @@ def run_case(
                     draft,
                     run_id,
                     entrypoint,
+                    seed,
                 )
             )
     except KeyboardInterrupt:
@@ -602,6 +779,7 @@ def run_case(
         duration_ms=max(0, (time.monotonic_ns() - monotonic_started) // 1_000_000),
         reproducibility_level="R0" if is_fake else "R1",
         agent_output=draft.agent_output,
+        usage=draft.usage,
         states=tuple(draft.states),
         state_diff=draft.state_diff_ref,
         graders=tuple(draft.graders),

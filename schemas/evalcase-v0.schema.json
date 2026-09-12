@@ -6,7 +6,8 @@
         "adapter": {
           "enum": [
             "fake",
-            "scripted"
+            "scripted",
+            "python"
           ],
           "title": "Adapter",
           "type": "string"
@@ -95,6 +96,13 @@
           "maximum": 10000,
           "minimum": 0,
           "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "tool_timeout_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Tool Timeout Seconds",
           "type": "integer"
         },
         "wall_time_seconds": {
@@ -393,6 +401,31 @@
       ],
       "title": "TestCommandGraderSpec",
       "type": "object"
+    },
+    "ToolSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Allow",
+          "type": "array"
+        },
+        "provider": {
+          "maxLength": 300,
+          "minLength": 3,
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "allow"
+      ],
+      "title": "ToolSpec",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -432,6 +465,17 @@
     },
     "task": {
       "$ref": "#/$defs/TaskSpec"
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

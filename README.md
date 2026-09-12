@@ -164,7 +164,7 @@ testable increment.
 | M0 — Contracts and run skeleton | Versioned schemas, validation, lifecycle, evidence writer, deterministic fake run | **Complete** |
 | M1 — Reproducible environment | Docker Compose lifecycle, safety precheck, dynamic ports, reset, state digests, cleanup | **Complete** |
 | M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | **Complete** |
-| M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | Planned |
+| M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | **Complete** |
 | M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | Planned |
 | M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | Planned |
 
@@ -226,6 +226,18 @@ uv run reprocase run examples/support-world/refund.yaml --agent agents.unapprove
 
 Each run writes `state.initial.json`, `state.final.json`, `state.diff.json`, grader artifacts, and
 a verdict with failure attribution to `.reprocase/runs/<run_id>/`.
+
+### M3: real Python agents through the Tool Broker
+
+Run a real (async, host-process) Python agent that can only touch the environment through
+allowlisted, schema-validated, budgeted tool calls:
+
+```bash
+uv run reprocase run examples/support-world/refund-agent.yaml
+uv run reprocase run examples/support-world/refund-agent.yaml --agent agents.wrong_refund_agent:run
+```
+
+The evidence bundle now also contains `tool.call.*` events and a structured `usage` block.
 
 Current CLI exit codes:
 

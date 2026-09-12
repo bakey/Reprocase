@@ -1,0 +1,79 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: support.refund.agent
+  version: 0.1.0
+  title: Standard refund executed by a Python agent through the Tool Broker
+  tags: [support, refund, m3]
+
+task:
+  input:
+    message: "请为订单 ORD-1001 办理退款，并把结果告知客户。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.correct_refund_agent:run
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.support_api:create_tools
+  allow:
+    - customer.get
+    - order.get
+    - refund.create
+    - email.send
+
+budgets:
+  wall_time_seconds: 30
+  max_tool_calls: 12
+  tool_timeout_seconds: 10
+
+graders:
+  - id: refund-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds/RF-9001/order_id
+        operator: eq
+        expected: ORD-1001
+      - path: /refunds/RF-9001/status
+        operator: eq
+        expected: completed
+      - path: /refunds/RF-9001/amount
+        operator: eq
+        expected: 49.9
+        tolerance: 0.001
+
+  - id: customer-notified
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/customer_id
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: refund_complete
+
+  - id: non-target-orders-unchanged
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /orders/ORD-2002
+        operator: unchanged
+
+  - id: policy-tests
+    type: test_command
+    critical: true
+    service: api
+    command: ["python", "-m", "evals.grade_refund", "ORD-1001"]
+    timeout_seconds: 20

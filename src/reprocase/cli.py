@@ -67,6 +67,10 @@ def run_command(
         str | None,
         typer.Option("--agent", help="Override the scripted actor entrypoint (module:function)."),
     ] = None,
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Seed recorded in the manifest and passed to the agent."),
+    ] = 0,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print the complete result as JSON."),
@@ -75,7 +79,7 @@ def run_command(
     """Execute one EvalCase and persist its evidence bundle."""
 
     try:
-        result = run_case(case_path, output, agent_override=agent)
+        result = run_case(case_path, output, agent_override=agent, seed=seed)
     except CaseValidationError as error:
         _print_error(error)
         raise typer.Exit(code=2) from error

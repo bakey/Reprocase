@@ -60,17 +60,34 @@ class FakeAgentConfig(StrictModel):
 
 
 class AgentSpec(StrictModel):
-    adapter: Literal["fake", "scripted"]
+    adapter: Literal["fake", "scripted", "python"]
     config: FakeAgentConfig = Field(default_factory=FakeAgentConfig)
     entrypoint: str | None = Field(default=None, min_length=3, max_length=300)
 
     @model_validator(mode="after")
     def entrypoint_matches_adapter(self) -> AgentSpec:
-        if self.adapter == "scripted" and self.entrypoint is None:
-            raise ValueError("scripted agents require an entrypoint such as agents.refund:run")
+        if self.adapter in {"scripted", "python"} and self.entrypoint is None:
+            raise ValueError(
+                f"{self.adapter} agents require an entrypoint such as agents.refund:run"
+            )
         if self.adapter == "fake" and self.entrypoint is not None:
             raise ValueError("fake agents do not accept an entrypoint")
         return self
+
+
+class ToolSpec(StrictModel):
+    provider: str = Field(min_length=3, max_length=300)
+    allow: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("allow")
+    @classmethod
+    def unique_allowed_tools(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("tools.allow must not contain duplicates")
+        for name in value:
+            if not re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*", name):
+                raise ValueError(f"invalid tool name: {name!r}")
+        return value
 
 
 class EnvironmentRef(StrictModel):
@@ -82,6 +99,7 @@ class EnvironmentRef(StrictModel):
 class BudgetSpec(StrictModel):
     wall_time_seconds: Annotated[int, Field(ge=1, le=3600)] = 120
     max_tool_calls: Annotated[int, Field(ge=0, le=10_000)] = 20
+    tool_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
 
 
 class FakeGraderSpec(StrictModel):
@@ -148,6 +166,7 @@ class EvalCase(StrictModel):
     task: TaskSpec
     agent: AgentSpec
     environment: EnvironmentRef
+    tools: ToolSpec | None = None
     budgets: BudgetSpec = Field(default_factory=BudgetSpec)
     graders: tuple[GraderSpec, ...] = Field(min_length=1)
     output: OutputSpec = Field(default_factory=OutputSpec)
@@ -159,6 +178,12 @@ class EvalCase(StrictModel):
         if len(set(ids)) != len(ids):
             raise ValueError("grader ids must be unique")
         return value
+
+    @model_validator(mode="after")
+    def python_agents_require_tools(self) -> EvalCase:
+        if self.agent.adapter == "python" and self.tools is None:
+            raise ValueError("python agents require a tools section with provider and allow")
+        return self
 
 
 class FakeEnvironmentConfig(StrictModel):

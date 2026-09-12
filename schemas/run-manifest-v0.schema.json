@@ -74,7 +74,9 @@
           "fake_grader",
           "compose_environment",
           "scripted_actor",
-          "deterministic_graders"
+          "deterministic_graders",
+          "python_agent",
+          "tool_broker"
         ],
         "type": "string"
       },
@@ -104,6 +106,11 @@
       "default": "reprocase.run-manifest/v0",
       "title": "Schema Version",
       "type": "string"
+    },
+    "seed": {
+      "default": 0,
+      "title": "Seed",
+      "type": "integer"
     },
     "source": {
       "$ref": "#/$defs/SourceIdentity"
