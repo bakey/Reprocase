@@ -102,12 +102,14 @@ class ToolBroker:
                 )
             ) from exc
         except jsonschema.SchemaError as exc:
-            raise self._reject(
-                ToolCallError(
-                    f"Tool {tool.name!r} has an invalid input schema: {exc.message}",
-                    code=FailureCode.TOOL_ARGUMENT_INVALID,
-                    tool=tool.name,
-                )
+            # unreachable after build-time validation; if a schema still turns
+            # out invalid at call time it is a provider defect, never an
+            # agent-argument problem
+            raise ReprocaseError(
+                f"Tool {tool.name!r} has an invalid input schema: {exc.message}",
+                code=FailureCode.CASE_SCHEMA_INVALID,
+                attribution=FailureAttribution.CASE_ERROR,
+                details={"tool": tool.name},
             ) from exc
 
     def _consume_budget(self, name: str) -> None:

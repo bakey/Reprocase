@@ -1,5 +1,65 @@
 {
   "$defs": {
+    "AgentIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "title": "Adapter",
+          "type": "string"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "entrypoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "provider_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "adapter"
+      ],
+      "title": "AgentIdentity",
+      "type": "object"
+    },
     "CaseIdentity": {
       "additionalProperties": false,
       "properties": {
@@ -29,9 +89,53 @@
       "title": "CaseIdentity",
       "type": "object"
     },
+    "CodeIdentity": {
+      "additionalProperties": false,
+      "description": "Digest of the code behind an entrypoint (relative paths only, §6.2).",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "title": "CodeIdentity",
+      "type": "object"
+    },
     "SourceIdentity": {
       "additionalProperties": false,
       "properties": {
+        "git_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Commit"
+        },
+        "git_dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Dirty"
+        },
         "platform": {
           "title": "Platform",
           "type": "string"
@@ -51,6 +155,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "budget": {
       "additionalProperties": {
         "type": "integer"

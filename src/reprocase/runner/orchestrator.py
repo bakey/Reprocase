@@ -20,7 +20,7 @@ from reprocase.case.models import (
     FakeEnvironmentDefinition,
     FakeGraderSpec,
 )
-from reprocase.entrypoints import load_callable
+from reprocase.entrypoints import code_identity, load_callable
 from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
 from reprocase.environments.protocol import CommandResult, EnvironmentHandle
 from reprocase.errors import (
@@ -38,6 +38,7 @@ from reprocase.recording.diff import diff_document
 from reprocase.recording.events import EventRecorder
 from reprocase.recording.state import StateRecorder
 from reprocase.results.models import (
+    AgentIdentity,
     ArtifactRef,
     CaseIdentity,
     FailureRecord,
@@ -59,6 +60,8 @@ from reprocase.runner.state_machine import RunStateMachine
 from reprocase.tools.broker import ToolBroker
 from reprocase.tools.redaction import redact
 from reprocase.tools.registry import ToolRegistry
+from reprocase.tools.validation import validate_tools
+from reprocase.vcs import git_identity
 
 
 class _RunDraft:
@@ -200,7 +203,7 @@ def _execute_fake(
             recorder.emit(
                 "agent.completed",
                 source="fake_agent",
-                payload={"output": draft.agent_output},
+                payload={"output": redact(draft.agent_output)},
             )
         except ReprocaseError as error:
             draft.failures.append(_failure_record(error))
@@ -270,7 +273,7 @@ async def _run_scripted_agent(
         recorder.emit(
             "agent.completed",
             source="scripted_actor",
-            payload={"output": draft.agent_output},
+            payload={"output": redact(draft.agent_output)},
         )
     except Exception as exc:  # actor failures are agent failures, never infra failures
         message = f"Scripted actor raised {type(exc).__name__}: {exc}"
@@ -305,7 +308,9 @@ async def _run_python_agent(
     assert tools_spec is not None  # enforced by EvalCase validation
 
     provider = load_callable(tools_spec.provider, import_root)
-    registry = ToolRegistry(list(provider(handle)))
+    supplied = list(provider(handle))
+    validate_tools(supplied, tools_spec.allow)  # provider defects -> CASE_ERROR/INVALID
+    registry = ToolRegistry(supplied)
     broker = ToolBroker(
         registry,
         allow=tools_spec.allow,
@@ -343,32 +348,44 @@ async def _run_python_agent(
     )
     model_usage: Usage | None = None
     try:
-        async with asyncio.timeout(wall_time):
+        async with asyncio.timeout(wall_time) as timer:
             agent_result = await adapter.run(loaded.case.task.input, broker, context)
         draft.agent_output = agent_result.output
         model_usage = agent_result.usage
         recorder.emit(
             "agent.completed",
             source="python_agent",
-            payload={"output": draft.agent_output, "summary": agent_result.summary},
+            payload={"output": redact(draft.agent_output), "summary": agent_result.summary},
         )
-    except TimeoutError:
-        message = f"Agent exceeded its wall time of {wall_time}s"
+    except TimeoutError as exc:
+        if timer.expired():
+            message = f"Agent exceeded its wall time of {wall_time}s"
+            code = FailureCode.AGENT_TIMEOUT
+            event_type = "agent.timed_out"
+            payload: dict[str, Any] = {
+                "wall_time_seconds": wall_time,
+                "tool_calls": broker.calls_made,
+            }
+        else:
+            # the agent (or its SDK) raised TimeoutError itself: an ordinary
+            # agent exception, not a wall-time expiry
+            message = f"Agent raised TimeoutError: {exc}"
+            code = FailureCode.AGENT_EXCEPTION
+            event_type = "agent.failed"
+            payload = {"code": FailureCode.AGENT_EXCEPTION, "message": message}
         draft.agent_error = message
         draft.failures.append(
             FailureRecord(
                 attribution=FailureAttribution.AGENT_FAILURE,
-                code=FailureCode.AGENT_TIMEOUT,
+                code=code,
                 message=message,
-                details={"entrypoint": entrypoint, "wall_time_seconds": wall_time},
+                details={"entrypoint": entrypoint},
             )
         )
-        recorder.emit(
-            "agent.timed_out",
-            source="python_agent",
-            payload={"wall_time_seconds": wall_time, "tool_calls": broker.calls_made},
-        )
+        recorder.emit(event_type, source="python_agent", payload=payload)
     except ReprocaseError as exc:
+        if exc.attribution != FailureAttribution.AGENT_FAILURE:
+            raise  # case/environment defects must not be re-labeled as agent failures
         # Structured failures escaping the agent (tool errors, invalid output)
         draft.agent_error = exc.message
         draft.failures.append(
@@ -621,11 +638,25 @@ def run_case(
     run_id = new_run_id()
     storage = RunStorage(Path(output_root), run_id)
     identity = _case_identity(loaded)
+    git_commit, git_dirty = git_identity(loaded.root)
     source = SourceIdentity(
         python=sys.version.split()[0],
         platform=f"{platform.system()}-{platform.machine()}",
+        git_commit=git_commit,
+        git_dirty=git_dirty,
     )
     budget = loaded.case.budgets.model_dump(mode="json")
+    import_root = loaded.environment_path.parent
+    tools_spec = loaded.case.tools
+    agent_identity = AgentIdentity(
+        adapter=loaded.case.agent.adapter,
+        entrypoint=entrypoint,
+        code=code_identity(entrypoint, import_root) if entrypoint is not None else None,
+        provider=tools_spec.provider if tools_spec is not None else None,
+        provider_code=(
+            code_identity(tools_spec.provider, import_root) if tools_spec is not None else None
+        ),
+    )
     if is_fake:
         manifest = RunManifest(
             run_id=run_id,
@@ -633,6 +664,7 @@ def run_case(
             source=source,
             budget=budget,
             seed=seed,
+            agent=agent_identity,
             reproducibility_level="R0",
             components=("fake_environment", "fake_agent", "fake_grader"),
         )
@@ -643,6 +675,7 @@ def run_case(
             source=source,
             budget=budget,
             seed=seed,
+            agent=agent_identity,
             reproducibility_level="R1",
             components=("compose_environment", "scripted_actor", "deterministic_graders"),
         )
@@ -653,6 +686,7 @@ def run_case(
             source=source,
             budget=budget,
             seed=seed,
+            agent=agent_identity,
             reproducibility_level="R1",
             components=(
                 "compose_environment",

@@ -14,6 +14,7 @@ def redact(value: Any) -> Any:
             key: REDACTED if str(key).lower() in SENSITIVE_KEYS else redact(item)
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, list | tuple):
+        # tuples collapse to JSON-compatible lists
         return [redact(item) for item in value]
     return value

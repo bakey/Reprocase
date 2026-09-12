@@ -83,16 +83,34 @@ def test_correct_python_agent_passes(tmp_path: Path) -> None:
     ]
     assert len(completed) == 4
     assert events[-1]["type"] == "run.completed"
+
+    # R1 identity: adapter, effective entrypoint, provider, code digests, git
+    manifest = json.loads((output / result.run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["agent"]["adapter"] == "python"
+    assert manifest["agent"]["entrypoint"] == "agents.correct_refund_agent:run"
+    assert manifest["agent"]["code"]["path"] == "agents/correct_refund_agent.py"
+    assert not manifest["agent"]["code"]["path"].startswith("/")
+    assert len(manifest["agent"]["code"]["sha256"]) == 64
+    assert manifest["agent"]["provider"] == "tools.support_api:create_tools"
+    assert manifest["agent"]["provider_code"]["path"] == "tools/support_api.py"
+    assert len(manifest["agent"]["provider_code"]["sha256"]) == 64
+    assert manifest["source"]["git_commit"] is None or len(manifest["source"]["git_commit"]) == 40
     assert _residual_resources() == []
 
 
 def test_wrong_python_agent_fails(tmp_path: Path) -> None:
-    result = run_case(AGENT_CASE, tmp_path / "runs", agent_override="agents.wrong_refund_agent:run")
+    output = tmp_path / "runs"
+    result = run_case(AGENT_CASE, output, agent_override="agents.wrong_refund_agent:run")
 
     assert result.verdict == Verdict.FAIL
     assert result.status == RunStatus.COMPLETED
     failed = {grader.grader_id for grader in result.graders if grader.status == "FAIL"}
     assert {"refund-created", "non-target-orders-unchanged", "policy-tests"} <= failed
+
+    # the effective (overridden) entrypoint is what the manifest records
+    manifest = json.loads((output / result.run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["agent"]["entrypoint"] == "agents.wrong_refund_agent:run"
+    assert manifest["agent"]["code"]["path"] == "agents/wrong_refund_agent.py"
     assert _residual_resources() == []
 
 
@@ -236,4 +254,118 @@ async def run(task, tools, context):
     # final state is still captured after the timeout (best-effort evidence)
     assert len(result.states) == 2
     assert result.duration_ms < 60_000
+    assert _residual_resources() == []
+
+
+def test_agent_raising_timeout_error_is_not_wall_time(tmp_path: Path) -> None:
+    """P2-4: an agent-side TimeoutError must not be reported as wall-time expiry."""
+
+    entrypoint = _write_agent(
+        tmp_path,
+        "agent_sdk_timeout",
+        """\
+async def run(task, tools, context):
+    raise TimeoutError("llm sdk request timed out")
+""",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["agent"]["entrypoint"] = entrypoint
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.FAIL
+    assert result.primary_failure is not None
+    assert result.primary_failure.attribution == FailureAttribution.AGENT_FAILURE
+    assert result.primary_failure.code == FailureCode.AGENT_EXCEPTION
+    assert "llm sdk request timed out" in result.primary_failure.message
+    events = _events(result, output)
+    assert not any(e["type"] == "agent.timed_out" for e in events)
+    assert any(e["type"] == "agent.failed" for e in events)
+    assert _residual_resources() == []
+
+
+def test_invalid_tool_schema_makes_run_invalid(tmp_path: Path) -> None:
+    """P1-3: a provider-supplied illegal schema is a case defect, not agent FAIL."""
+
+    (tmp_path / "bad_provider.py").write_text(
+        """\
+class BadTool:
+    name = "order.get"
+    description = "bad"
+    input_schema = {"type": "nonsense"}
+
+    async def invoke(self, arguments):
+        return {}
+
+
+def create_tools(environment):
+    return [BadTool()]
+""",
+        encoding="utf-8",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["tools"]["provider"] = "bad_provider:create_tools"
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.INVALID
+    assert result.status == RunStatus.COMPLETED_WITH_ERROR
+    assert result.primary_failure is not None
+    assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
+    assert result.primary_failure.code == FailureCode.CASE_SCHEMA_INVALID
+    assert _residual_resources() == []
+
+
+def test_allowlist_referencing_unknown_tool_makes_run_invalid(tmp_path: Path) -> None:
+    """P1-3: allow entries the provider does not supply are a case defect."""
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["tools"]["allow"] = ["order.get", "ghost.tool"]
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.INVALID
+    assert result.primary_failure is not None
+    assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
+    assert _residual_resources() == []
+
+
+def test_agent_completed_event_is_redacted(tmp_path: Path) -> None:
+    """P2-5: agent output containing sensitive keys must not land verbatim on disk."""
+
+    entrypoint = _write_agent(
+        tmp_path,
+        "agent_secret_output",
+        """\
+async def run(task, tools, context):
+    order = await tools.call("order.get", {"order_id": "ORD-1001"})
+    await tools.call(
+        "refund.create", {"order_id": order["id"], "amount": order["refundable_amount"]}
+    )
+    await tools.call(
+        "email.send",
+        {"customer_id": order["customer_id"], "template": "refund_complete"},
+    )
+    return {"message": "done", "credentials": {"api_key": "topsecret-value"}}
+""",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["agent"]["entrypoint"] = entrypoint
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.PASS
+    raw_events = (output / result.run_id / "events.jsonl").read_text(encoding="utf-8")
+    assert "topsecret-value" not in raw_events
+    completed = [e for e in _events(result, output) if e["type"] == "agent.completed"]
+    assert completed[0]["payload"]["output"]["credentials"]["api_key"] == "[REDACTED]"
+    # the unredacted output is still available in the structured result
+    assert result.agent_output["credentials"]["api_key"] == "topsecret-value"
     assert _residual_resources() == []

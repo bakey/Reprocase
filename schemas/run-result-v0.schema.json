@@ -345,6 +345,7 @@
         "cost_usd": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "number"
             },
             {
@@ -357,6 +358,7 @@
         "input_tokens": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -369,6 +371,7 @@
         "model_calls": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -381,6 +384,7 @@
         "output_tokens": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -392,6 +396,7 @@
         },
         "tool_calls": {
           "default": 0,
+          "minimum": 0,
           "title": "Tool Calls",
           "type": "integer"
         }
