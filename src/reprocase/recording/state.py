@@ -33,7 +33,9 @@ class StateRecorder:
         # sha256 always equals the reported content digest.
         payload = canonical_json(captured.state)
         filename = f"state.{phase}.json"
-        (self.run_dir / filename).write_bytes(payload)
+        target = self.run_dir / filename
+        target.write_bytes(payload)
+        target.chmod(0o600)
         snapshot = StateSnapshot(
             captured_at=datetime.now(UTC),
             phase=phase,

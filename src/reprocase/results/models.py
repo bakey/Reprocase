@@ -189,4 +189,6 @@ class RunResult(StrictOutputModel):
     artifacts: tuple[ArtifactRef, ...] = ()
     primary_failure: FailureRecord | None = None
     secondary_failures: tuple[FailureRecord, ...] = ()
+    cleanup_required: bool = False
+    cleanup_command: str | None = None
     warnings: tuple[str, ...] = ()

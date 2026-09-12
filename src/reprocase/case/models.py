@@ -155,8 +155,13 @@ type GraderSpec = Annotated[
 ]
 
 
+class RedactionSpec(StrictModel):
+    keys: tuple[str, ...] = ("authorization", "api_key", "password", "token", "cookie")
+
+
 class OutputSpec(StrictModel):
     retain_environment_on_failure: bool = False
+    redaction: RedactionSpec = Field(default_factory=RedactionSpec)
 
 
 class EvalCase(StrictModel):

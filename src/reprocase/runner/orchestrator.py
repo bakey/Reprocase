@@ -53,6 +53,7 @@ from reprocase.results.models import (
     Usage,
     Verdict,
 )
+from reprocase.results.report import write_html_report
 from reprocase.results.storage import RunStorage
 from reprocase.runner.fakes import FakeAgent, FakeEnvironment, FakeGrader
 from reprocase.runner.scripted import ActorContext, load_actor
@@ -62,6 +63,8 @@ from reprocase.tools.redaction import redact
 from reprocase.tools.registry import ToolRegistry
 from reprocase.tools.validation import validate_tools
 from reprocase.vcs import git_identity
+
+CANCELLATION_GRACE_SECONDS = 5.0
 
 
 class _RunDraft:
@@ -74,6 +77,9 @@ class _RunDraft:
         self.states: list[StateSnapshot] = []
         self.state_diff_ref: ArtifactRef | None = None
         self.artifacts: list[ArtifactRef] = []
+        self.warnings: list[str] = []
+        self.cleanup_required = False
+        self.cleanup_command: str | None = None
 
 
 def _failure_record(error: ReprocaseError) -> FailureRecord:
@@ -101,7 +107,13 @@ def _verdict(draft: _RunDraft) -> Verdict:
         FailureAttribution.GRADER_ERROR,
         FailureAttribution.RUNNER_ERROR,
     }
-    if any(failure.attribution in invalid_attributions for failure in draft.failures):
+    # teardown failures never rewrite an otherwise valid conclusion (§16.2):
+    # evidence was already collected; they surface as cleanup_required instead
+    if any(
+        failure.attribution in invalid_attributions
+        and failure.code != FailureCode.ENV_TEARDOWN_FAILED
+        for failure in draft.failures
+    ):
         return Verdict.INVALID
     if any(grader.status == GraderStatus.ERROR for grader in draft.graders):
         return Verdict.INVALID
@@ -355,76 +367,114 @@ async def _run_python_agent(
             },
         )
         model_usage: Usage | None = None
-        try:
-            async with asyncio.timeout(wall_time) as timer:
-                agent_result = await adapter.run(loaded.case.task.input, broker, context)
-            draft.agent_output = agent_result.output
-            model_usage = agent_result.usage
-            recorder.emit(
-                "agent.completed",
-                source="python_agent",
-                payload={"output": redact(draft.agent_output), "summary": agent_result.summary},
+        # Two-phase wall time: asyncio.wait never raises task exceptions, so
+        # agent-side TimeoutErrors stay distinguishable from a real expiry.
+        agent_task = asyncio.create_task(adapter.run(loaded.case.task.input, broker, context))
+        done, _pending = await asyncio.wait({agent_task}, timeout=wall_time)
+        if not done:
+            # wall time expired: cancel, then allow a bounded grace period for
+            # the agent to honour the cancellation (we cannot force-kill an
+            # in-process coroutine)
+            agent_task.cancel()
+            settled, _ = await asyncio.wait({agent_task}, timeout=CANCELLATION_GRACE_SECONDS)
+            ignored = not bool(settled)
+            if settled and not agent_task.cancelled():
+                agent_task.exception()  # retrieve to avoid "never retrieved" warnings
+            message = f"Agent exceeded its wall time of {wall_time}s"
+            if ignored:
+                warning = (
+                    f"Agent ignored cancellation for {CANCELLATION_GRACE_SECONDS:.0f}s after "
+                    "wall-time expiry; its orphaned task may still be running in-process"
+                )
+                draft.warnings.append(warning)
+                message += " (cancellation ignored)"
+            draft.agent_error = message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=FailureCode.AGENT_TIMEOUT,
+                    message=message,
+                    details={
+                        "entrypoint": entrypoint,
+                        "wall_time_seconds": wall_time,
+                        "ignored_cancellation": ignored,
+                    },
+                )
             )
-        except TimeoutError as exc:
-            if timer.expired():
-                message = f"Agent exceeded its wall time of {wall_time}s"
-                code = FailureCode.AGENT_TIMEOUT
-                event_type = "agent.timed_out"
-                payload: dict[str, Any] = {
+            recorder.emit(
+                "agent.timed_out",
+                source="python_agent",
+                payload={
                     "wall_time_seconds": wall_time,
                     "tool_calls": broker.calls_made,
-                }
-            else:
+                    "ignored_cancellation": ignored,
+                },
+            )
+        else:
+            try:
+                agent_result = agent_task.result()
+                draft.agent_output = agent_result.output
+                model_usage = agent_result.usage
+                recorder.emit(
+                    "agent.completed",
+                    source="python_agent",
+                    payload={
+                        "output": redact(draft.agent_output),
+                        "summary": agent_result.summary,
+                    },
+                )
+            except TimeoutError as exc:
                 # the agent (or its SDK) raised TimeoutError itself: an ordinary
                 # agent exception, not a wall-time expiry
                 message = f"Agent raised TimeoutError: {exc}"
-                code = FailureCode.AGENT_EXCEPTION
-                event_type = "agent.failed"
-                payload = {"code": FailureCode.AGENT_EXCEPTION, "message": message}
-            draft.agent_error = message
-            draft.failures.append(
-                FailureRecord(
-                    attribution=FailureAttribution.AGENT_FAILURE,
-                    code=code,
-                    message=message,
-                    details={"entrypoint": entrypoint},
+                draft.agent_error = message
+                draft.failures.append(
+                    FailureRecord(
+                        attribution=FailureAttribution.AGENT_FAILURE,
+                        code=FailureCode.AGENT_EXCEPTION,
+                        message=message,
+                        details={"entrypoint": entrypoint},
+                    )
                 )
-            )
-            recorder.emit(event_type, source="python_agent", payload=payload)
-        except ReprocaseError as exc:
-            if exc.attribution != FailureAttribution.AGENT_FAILURE:
-                raise  # case/environment defects must not be re-labeled as agent failures
-            # Structured failures escaping the agent (tool errors, invalid output)
-            draft.agent_error = exc.message
-            draft.failures.append(
-                FailureRecord(
-                    attribution=FailureAttribution.AGENT_FAILURE,
-                    code=exc.code,
-                    message=exc.message,
-                    details=exc.details,
+                recorder.emit(
+                    "agent.failed",
+                    source="python_agent",
+                    payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
                 )
-            )
-            recorder.emit(
-                "agent.failed",
-                source="python_agent",
-                payload={"code": exc.code, "message": exc.message},
-            )
-        except Exception as exc:  # untrusted-shape but trusted-code agent bugs
-            message = f"Agent raised {type(exc).__name__}: {exc}"
-            draft.agent_error = message
-            draft.failures.append(
-                FailureRecord(
-                    attribution=FailureAttribution.AGENT_FAILURE,
-                    code=FailureCode.AGENT_EXCEPTION,
-                    message=message,
-                    details={"entrypoint": entrypoint},
+            except ReprocaseError as exc:
+                if exc.attribution != FailureAttribution.AGENT_FAILURE:
+                    raise  # case/environment defects must not be re-labeled as agent failures
+                # Structured failures escaping the agent (tool errors, invalid output)
+                draft.agent_error = exc.message
+                draft.failures.append(
+                    FailureRecord(
+                        attribution=FailureAttribution.AGENT_FAILURE,
+                        code=exc.code,
+                        message=exc.message,
+                        details=exc.details,
+                    )
                 )
-            )
-            recorder.emit(
-                "agent.failed",
-                source="python_agent",
-                payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-            )
+                recorder.emit(
+                    "agent.failed",
+                    source="python_agent",
+                    payload={"code": exc.code, "message": exc.message},
+                )
+            except Exception as exc:  # untrusted-shape but trusted-code agent bugs
+                message = f"Agent raised {type(exc).__name__}: {exc}"
+                draft.agent_error = message
+                draft.failures.append(
+                    FailureRecord(
+                        attribution=FailureAttribution.AGENT_FAILURE,
+                        code=FailureCode.AGENT_EXCEPTION,
+                        message=message,
+                        details={"entrypoint": entrypoint},
+                    )
+                )
+                recorder.emit(
+                    "agent.failed",
+                    source="python_agent",
+                    payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+                )
 
         if broker.budget_exceeded and not any(
             failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
@@ -518,25 +568,38 @@ async def _execute_compose(
             await _run_python_agent(session, loaded, draft, run_id, entrypoint, handle, seed)
 
         session.transition(RunState.CAPTURING_FINAL_STATE)
-        final_snapshot, final_document = await states.capture("final")
-        draft.states.append(final_snapshot)
-        recorder.emit(
-            "environment.state.captured",
-            source="compose_environment",
-            payload={"phase": "final", "content_digest": final_snapshot.content_digest},
-        )
+        final_snapshot: StateSnapshot | None = None
+        final_document: dict[str, Any] | None = None
+        try:
+            final_snapshot, final_document = await states.capture("final")
+            draft.states.append(final_snapshot)
+            recorder.emit(
+                "environment.state.captured",
+                source="compose_environment",
+                payload={"phase": "final", "content_digest": final_snapshot.content_digest},
+            )
+        except EnvironmentDriverError as exc:
+            # §12.3: without a final state, state-dependent graders degrade to
+            # SKIPPED and the run is INVALID; never fabricate a business FAIL
+            draft.failures.append(_failure_record(exc))
+            recorder.emit(
+                "environment.state.capture_failed",
+                source="compose_environment",
+                payload={"phase": "final", "code": exc.code, "message": exc.message},
+            )
 
-        diff = diff_document(initial_document, final_document)
-        diff_payload = json.dumps(diff, ensure_ascii=False, indent=2, sort_keys=True).encode(
-            "utf-8"
-        )
-        (storage.run_dir / "state.diff.json").write_bytes(diff_payload)
-        draft.state_diff_ref = ArtifactRef(
-            media_type="application/json",
-            path="state.diff.json",
-            size_bytes=len(diff_payload),
-            sha256=hashlib.sha256(diff_payload).hexdigest(),
-        )
+        if final_document is not None:
+            diff = diff_document(initial_document, final_document)
+            diff_payload = json.dumps(diff, ensure_ascii=False, indent=2, sort_keys=True).encode(
+                "utf-8"
+            )
+            (storage.run_dir / "state.diff.json").write_bytes(diff_payload)
+            draft.state_diff_ref = ArtifactRef(
+                media_type="application/json",
+                path="state.diff.json",
+                size_bytes=len(diff_payload),
+                sha256=hashlib.sha256(diff_payload).hexdigest(),
+            )
 
         session.transition(RunState.GRADING)
         grader_context = GraderContext(
@@ -567,6 +630,8 @@ async def _execute_compose(
         draft.artifacts.extend(artifacts.created)
 
         log_paths = await driver.collect_logs(handle)
+        if driver.log_truncated:
+            draft.warnings.append("Environment logs exceeded 10 MiB and were truncated to the tail")
         for log_path in log_paths:
             content = log_path.read_bytes()
             relative = log_path.relative_to(storage.run_dir).as_posix()
@@ -596,11 +661,29 @@ async def _execute_compose(
                 work_dir=driver.work_dir,
             )
         if teardown_handle is not None:
-            try:
-                await driver.teardown(teardown_handle)
+            torn_down = False
+            for _attempt in range(2):  # shielded, one retry: best effort (§12.4)
+                try:
+                    await asyncio.shield(driver.teardown(teardown_handle))
+                    torn_down = True
+                    break
+                except asyncio.CancelledError:
+                    continue  # Ctrl-C during teardown: retry once, then give up
+                except EnvironmentDriverError as exc:
+                    draft.failures.append(_failure_record(exc))
+                    break
+            if torn_down:
                 recorder.emit("environment.teardown.completed", source="compose_environment")
-            except EnvironmentDriverError as exc:
-                draft.failures.append(_failure_record(exc))
+            else:
+                draft.cleanup_required = True
+                draft.cleanup_command = (
+                    f"docker compose -p {teardown_handle.project_name} "
+                    "down --volumes --remove-orphans"
+                )
+                draft.warnings.append(
+                    "Environment teardown did not complete; manual cleanup required for "
+                    f"compose project {teardown_handle.project_name}"
+                )
 
 
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
@@ -809,7 +892,9 @@ def run_case(
         terminal_state = RunState.COMPLETED
 
     finished_at = datetime.now(UTC)
-    warnings = ("M0 uses fake components and provides R0 evidence only.",) if is_fake else ()
+    warnings = list(draft.warnings)
+    if is_fake:
+        warnings.append("M0 uses fake components and provides R0 evidence only.")
     result = RunResult(
         run_id=run_id,
         status=status,
@@ -820,7 +905,8 @@ def run_case(
         finished_at=finished_at,
         duration_ms=max(0, (time.monotonic_ns() - monotonic_started) // 1_000_000),
         reproducibility_level="R0" if is_fake else "R1",
-        agent_output=draft.agent_output,
+        # field-level redaction also applies to the persisted result (§17.1)
+        agent_output=redact(draft.agent_output, extra_keys=loaded.case.output.redaction.keys),
         usage=draft.usage,
         states=tuple(draft.states),
         state_diff=draft.state_diff_ref,
@@ -828,7 +914,9 @@ def run_case(
         artifacts=tuple(draft.artifacts),
         primary_failure=draft.failures[0] if draft.failures else None,
         secondary_failures=tuple(draft.failures[1:]),
-        warnings=warnings,
+        cleanup_required=draft.cleanup_required,
+        cleanup_command=draft.cleanup_command,
+        warnings=tuple(warnings),
     )
     storage.write_result(result)
     session.transition(terminal_state)
@@ -837,4 +925,12 @@ def run_case(
         source="orchestrator",
         payload={"status": status, "verdict": verdict},
     )
+    try:
+        write_html_report(storage.run_dir)
+    except Exception as report_error:  # a broken report must never break the run
+        recorder.emit(
+            "report.failed",
+            source="orchestrator",
+            payload={"error": f"{type(report_error).__name__}: {report_error}"},
+        )
     return result

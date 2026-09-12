@@ -31,6 +31,7 @@ from reprocase.errors import CaseValidationError, EnvironmentDriverError, Failur
 
 _PORT_REFERENCE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 _SLUG_CLEANUP = re.compile(r"[^a-z0-9]+")
+LOG_TAIL_LIMIT_BYTES = 10 * 1024 * 1024
 
 
 def make_project_name(prefix: str, slug: str, run_suffix: str) -> str:
@@ -85,6 +86,7 @@ class ComposeEnvironmentDriver:
         self.allow_unsafe = allow_unsafe
         self._ports: dict[str, int] = {}
         self._service_urls: dict[str, str] = {}
+        self.log_truncated = False
         self._base_argv = [
             "docker",
             "compose",
@@ -324,8 +326,19 @@ class ComposeEnvironmentDriver:
         result = await self._compose(["logs", "--no-color"], timeout_seconds=60.0)
         if result.exit_code != 0:
             return []
+        content = result.stdout
+        self.log_truncated = False
+        if len(content.encode("utf-8")) > LOG_TAIL_LIMIT_BYTES:
+            # keep the tail within the section-18 bound and say so in the file
+            encoded = content.encode("utf-8")[-LOG_TAIL_LIMIT_BYTES:]
+            content = (
+                f"[reprocase] log truncated to the last {LOG_TAIL_LIMIT_BYTES} bytes\n"
+                + encoded.decode("utf-8", errors="replace")
+            )
+            self.log_truncated = True
         log_path = handle.work_dir / "environment.log"
-        log_path.write_text(result.stdout, encoding="utf-8")
+        log_path.write_text(content, encoding="utf-8")
+        log_path.chmod(0o600)
         return [log_path]
 
     async def teardown(self, handle: EnvironmentHandle) -> None:

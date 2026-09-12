@@ -431,6 +431,23 @@
     "case": {
       "$ref": "#/$defs/CaseIdentity"
     },
+    "cleanup_command": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cleanup Command"
+    },
+    "cleanup_required": {
+      "default": false,
+      "title": "Cleanup Required",
+      "type": "boolean"
+    },
     "duration_ms": {
       "minimum": 0,
       "title": "Duration Ms",

@@ -366,8 +366,10 @@ async def run(task, tools, context):
     assert "topsecret-value" not in raw_events
     completed = [e for e in _events(result, output) if e["type"] == "agent.completed"]
     assert completed[0]["payload"]["output"]["credentials"]["api_key"] == "[REDACTED]"
-    # the unredacted output is still available in the structured result
-    assert result.agent_output["credentials"]["api_key"] == "topsecret-value"
+    # M4: the persisted result is redacted field-by-field as well
+    assert result.agent_output["credentials"]["api_key"] == "[REDACTED]"
+    raw_result = (output / result.run_id / "result.json").read_text(encoding="utf-8")
+    assert "topsecret-value" not in raw_result
     assert _residual_resources() == []
 
 
