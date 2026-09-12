@@ -1,5 +1,71 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "media_type": {
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "media_type",
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "AssertionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "default": null,
+          "title": "Actual"
+        },
+        "expected": {
+          "default": null,
+          "title": "Expected"
+        },
+        "explanation": {
+          "default": "",
+          "title": "Explanation",
+          "type": "string"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/GraderStatus"
+        }
+      },
+      "required": [
+        "path",
+        "operator",
+        "status"
+      ],
+      "title": "AssertionResult",
+      "type": "object"
+    },
     "CaseIdentity": {
       "additionalProperties": false,
       "properties": {
@@ -46,6 +112,7 @@
         "CASE_REFERENCE_MISSING",
         "CASE_REFERENCE_OUTSIDE_ROOT",
         "CASE_UNSUPPORTED_DRIVER",
+        "CASE_ENTRYPOINT_INVALID",
         "ENV_FAKE_START_FAILED",
         "ENV_FAKE_HEALTHCHECK_FAILED",
         "ENV_COMPOSE_UNSAFE",
@@ -57,8 +124,13 @@
         "ENV_STATE_INVALID",
         "ENV_TEARDOWN_FAILED",
         "AGENT_FAKE_EXECUTION_FAILED",
+        "AGENT_EXCEPTION",
         "GRADER_FAKE_EXECUTION_FAILED",
         "GRADER_ASSERTION_FAILED",
+        "GRADER_EXECUTION_ERROR",
+        "GRADER_OUTPUT_INVALID",
+        "GRADER_TIMEOUT",
+        "TEST_COMMAND_FAILED",
         "RUNNER_INVALID_TRANSITION",
         "RUNNER_STORAGE_ERROR",
         "RUNNER_INTERNAL_ERROR",
@@ -97,17 +169,67 @@
     "GraderResult": {
       "additionalProperties": false,
       "properties": {
+        "actual": {
+          "default": null,
+          "title": "Actual"
+        },
+        "assertions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssertionResult"
+          },
+          "title": "Assertions",
+          "type": "array"
+        },
         "critical": {
           "title": "Critical",
           "type": "boolean"
+        },
+        "duration_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "evidence": {
+          "default": [],
+          "items": {},
+          "title": "Evidence",
+          "type": "array"
+        },
+        "expected": {
+          "default": null,
+          "title": "Expected"
         },
         "explanation": {
           "title": "Explanation",
           "type": "string"
         },
+        "grader_digest": {
+          "default": "",
+          "title": "Grader Digest",
+          "type": "string"
+        },
         "grader_id": {
           "title": "Grader Id",
           "type": "string"
+        },
+        "grader_type": {
+          "default": "fake",
+          "title": "Grader Type",
+          "type": "string"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
         },
         "status": {
           "$ref": "#/$defs/GraderStatus"
@@ -126,7 +248,8 @@
       "enum": [
         "PASS",
         "FAIL",
-        "ERROR"
+        "ERROR",
+        "SKIPPED"
       ],
       "title": "GraderStatus",
       "type": "string"
@@ -164,6 +287,50 @@
       "title": "RunStatus",
       "type": "string"
     },
+    "StateSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "canonicalization_digest": {
+          "title": "Canonicalization Digest",
+          "type": "string"
+        },
+        "captured_at": {
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "content_digest": {
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "initial",
+            "final"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "reprocase.state/v0",
+          "default": "reprocase.state/v0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "captured_at",
+        "phase",
+        "canonicalization_digest",
+        "content_digest",
+        "artifact"
+      ],
+      "title": "StateSnapshot",
+      "type": "object"
+    },
     "Verdict": {
       "enum": [
         "PASS",
@@ -179,6 +346,14 @@
     "agent_output": {
       "default": null,
       "title": "Agent Output"
+    },
+    "artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "title": "Artifacts",
+      "type": "array"
     },
     "case": {
       "$ref": "#/$defs/CaseIdentity"
@@ -215,6 +390,15 @@
       ],
       "default": null
     },
+    "reproducibility_level": {
+      "default": "R0",
+      "enum": [
+        "R0",
+        "R1"
+      ],
+      "title": "Reproducibility Level",
+      "type": "string"
+    },
     "run_id": {
       "title": "Run Id",
       "type": "string"
@@ -237,6 +421,25 @@
       "format": "date-time",
       "title": "Started At",
       "type": "string"
+    },
+    "state_diff": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "states": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StateSnapshot"
+      },
+      "title": "States",
+      "type": "array"
     },
     "status": {
       "$ref": "#/$defs/RunStatus"

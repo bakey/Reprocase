@@ -71,7 +71,10 @@
         "enum": [
           "fake_environment",
           "fake_agent",
-          "fake_grader"
+          "fake_grader",
+          "compose_environment",
+          "scripted_actor",
+          "deterministic_graders"
         ],
         "type": "string"
       },
@@ -84,8 +87,11 @@
       "type": "string"
     },
     "reproducibility_level": {
-      "const": "R0",
       "default": "R0",
+      "enum": [
+        "R0",
+        "R1"
+      ],
       "title": "Reproducibility Level",
       "type": "string"
     },

@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 COPY app/ /srv/app/
+COPY evals/ /srv/evals/
 COPY fixtures/ /fixtures/
 
 EXPOSE 8000

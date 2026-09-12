@@ -12,7 +12,7 @@ import typer
 from reprocase.case.loader import load_case
 from reprocase.environments.check import load_compose_target, run_environment_check
 from reprocase.errors import CaseValidationError, EnvironmentDriverError, ReprocaseError
-from reprocase.results.models import Verdict
+from reprocase.results.models import GraderStatus, RunStatus, Verdict
 from reprocase.runner.orchestrator import run_case
 
 app = typer.Typer(
@@ -63,15 +63,19 @@ def run_command(
         Path,
         typer.Option("--output", "-o", help="Root directory for run evidence."),
     ] = Path(".reprocase/runs"),
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Override the scripted actor entrypoint (module:function)."),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print the complete result as JSON."),
     ] = False,
 ) -> None:
-    """Execute one M0 fake EvalCase and persist its evidence bundle."""
+    """Execute one EvalCase and persist its evidence bundle."""
 
     try:
-        result = run_case(case_path, output)
+        result = run_case(case_path, output, agent_override=agent)
     except CaseValidationError as error:
         _print_error(error)
         raise typer.Exit(code=2) from error
@@ -94,11 +98,23 @@ def run_command(
         )
         typer.echo(f"Run: {result.run_id}")
         typer.echo(f"Evidence: {(output.resolve() / result.run_id)}")
+        for snapshot in result.states:
+            typer.echo(f"State {snapshot.phase}: {snapshot.content_digest}")
+        for graded in result.graders:
+            color = {
+                GraderStatus.PASS: typer.colors.GREEN,
+                GraderStatus.FAIL: typer.colors.RED,
+                GraderStatus.ERROR: typer.colors.YELLOW,
+                GraderStatus.SKIPPED: typer.colors.WHITE,
+            }[graded.status]
+            typer.secho(f"{graded.status} {graded.grader_id}", fg=color)
         if result.primary_failure is not None:
             typer.echo(f"Failure: [{result.primary_failure.code}] {result.primary_failure.message}")
 
     if result.verdict == Verdict.FAIL:
         raise typer.Exit(code=1)
+    if result.status == RunStatus.CANCELLED:
+        raise typer.Exit(code=4)
     if result.verdict == Verdict.INVALID:
         raise typer.Exit(code=3)
 

@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -26,7 +27,7 @@ from reprocase.environments.protocol import (
 from reprocase.environments.safety import parse_rendered_config, require_safe_compose
 from reprocase.environments.state import canonicalize_state
 from reprocase.environments.subprocesses import CommandTimeoutError, run_argv
-from reprocase.errors import EnvironmentDriverError, FailureCode
+from reprocase.errors import CaseValidationError, EnvironmentDriverError, FailureCode
 
 _PORT_REFERENCE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 _SLUG_CLEANUP = re.compile(r"[^a-z0-9]+")
@@ -35,6 +36,24 @@ _SLUG_CLEANUP = re.compile(r"[^a-z0-9]+")
 def make_project_name(prefix: str, slug: str, run_suffix: str) -> str:
     cleaned = _SLUG_CLEANUP.sub("_", slug.lower()).strip("_") or "case"
     return f"{prefix}_{cleaned[:32]}_{run_suffix}"
+
+
+def resolve_compose_file(definition: ComposeEnvironmentDefinition, base: Path) -> Path:
+    if definition.compose.file is None:
+        raise CaseValidationError(
+            "No compose file referenced: set environment.compose_file in the EvalCase "
+            "or compose.file in environment.yaml",
+            code=FailureCode.CASE_REFERENCE_MISSING,
+            details={"environment": str(base)},
+        )
+    compose_file = (base / definition.compose.file).resolve()
+    if not compose_file.is_file():
+        raise CaseValidationError(
+            f"Referenced file does not exist: {compose_file}",
+            code=FailureCode.CASE_REFERENCE_MISSING,
+            details={"path": str(compose_file)},
+        )
+    return compose_file
 
 
 def _allocate_host_port() -> int:
@@ -65,6 +84,7 @@ class ComposeEnvironmentDriver:
         self.env_file = self.work_dir / "compose.env"
         self.allow_unsafe = allow_unsafe
         self._ports: dict[str, int] = {}
+        self._service_urls: dict[str, str] = {}
         self._base_argv = [
             "docker",
             "compose",
@@ -75,6 +95,14 @@ class ComposeEnvironmentDriver:
             "-f",
             str(self.compose_file),
         ]
+
+    @property
+    def ports(self) -> dict[str, int]:
+        return dict(self._ports)
+
+    @property
+    def service_urls(self) -> dict[str, str]:
+        return dict(self._service_urls)
 
     async def _compose(
         self,
@@ -150,11 +178,35 @@ class ComposeEnvironmentDriver:
         rendered = parse_rendered_config(config.stdout, compose_file=self.compose_file)
         if not self.allow_unsafe:
             require_safe_compose(rendered, raw_compose=raw_compose)
+        self._service_urls = self._discover_service_urls(rendered)
+
+    def _discover_service_urls(self, rendered: dict[str, Any]) -> dict[str, str]:
+        """Map services to host URLs by matching published container ports."""
+
+        container_ports = set(self.definition.compose.port_variables.values())
+        urls: dict[str, str] = {}
+        services = rendered.get("services") or {}
+        for name, service in services.items():
+            for published in service.get("ports") or []:
+                if not isinstance(published, dict):
+                    continue
+                target = published.get("target")
+                if target not in container_ports:
+                    continue
+                variable = next(
+                    key
+                    for key, value in self.definition.compose.port_variables.items()
+                    if value == target
+                )
+                host_port = self._ports.get(variable)
+                if host_port is not None:
+                    urls[str(name)] = f"http://127.0.0.1:{host_port}"
+        return urls
 
     async def start(self) -> EnvironmentHandle:
         timeout = float(self.definition.compose.startup_timeout_seconds) + 30.0
         result = await self._compose(
-            ["up", "-d", "--wait"],
+            ["up", "-d", "--wait", "--build"],
             timeout_seconds=timeout,
             timeout_code=FailureCode.ENV_START_FAILED,
         )
@@ -171,7 +223,7 @@ class ComposeEnvironmentDriver:
             env_file=self.env_file,
             work_dir=self.work_dir,
             ports=dict(self._ports),
-            service_urls={},
+            service_urls=dict(self._service_urls),
         )
 
     async def exec(
@@ -180,8 +232,13 @@ class ComposeEnvironmentDriver:
         service: str,
         argv: list[str],
         timeout_seconds: float,
+        timeout_code: FailureCode = FailureCode.ENV_COMPOSE_INVALID,
     ) -> CommandResult:
-        return await self._compose(["exec", "-T", service, *argv], timeout_seconds=timeout_seconds)
+        return await self._compose(
+            ["exec", "-T", service, *argv],
+            timeout_seconds=timeout_seconds,
+            timeout_code=timeout_code,
+        )
 
     async def restore(self, handle: EnvironmentHandle) -> None:
         spec = self.definition.restore

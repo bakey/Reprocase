@@ -13,7 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from reprocase.case.loader import load_case
 from reprocase.case.models import ComposeEnvironmentDefinition, EnvironmentDefinition
-from reprocase.environments.compose import ComposeEnvironmentDriver
+from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
 from reprocase.environments.protocol import EnvironmentHandle
 from reprocase.errors import (
     CaseValidationError,
@@ -52,21 +52,7 @@ class EnvCheckReport:
 
 
 def _resolve_compose_file(definition: ComposeEnvironmentDefinition, base: Path) -> Path:
-    if definition.compose.file is None:
-        raise CaseValidationError(
-            "No compose file referenced: set environment.compose_file in the EvalCase "
-            "or compose.file in environment.yaml",
-            code=FailureCode.CASE_REFERENCE_MISSING,
-            details={"environment": str(base)},
-        )
-    compose_file = (base / definition.compose.file).resolve()
-    if not compose_file.is_file():
-        raise CaseValidationError(
-            f"Referenced file does not exist: {compose_file}",
-            code=FailureCode.CASE_REFERENCE_MISSING,
-            details={"path": str(compose_file)},
-        )
-    return compose_file
+    return resolve_compose_file(definition, base)
 
 
 def load_compose_target(

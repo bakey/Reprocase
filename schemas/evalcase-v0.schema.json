@@ -4,18 +4,87 @@
       "additionalProperties": false,
       "properties": {
         "adapter": {
-          "const": "fake",
+          "enum": [
+            "fake",
+            "scripted"
+          ],
           "title": "Adapter",
           "type": "string"
         },
         "config": {
           "$ref": "#/$defs/FakeAgentConfig"
+        },
+        "entrypoint": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 3,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint"
         }
       },
       "required": [
         "adapter"
       ],
       "title": "AgentSpec",
+      "type": "object"
+    },
+    "AssertionOperator": {
+      "enum": [
+        "eq",
+        "not_eq",
+        "exists",
+        "absent",
+        "contains",
+        "gte",
+        "lte",
+        "unchanged",
+        "changed",
+        "length_eq"
+      ],
+      "type": "string"
+    },
+    "AssertionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "default": null,
+          "title": "Expected"
+        },
+        "operator": {
+          "$ref": "#/$defs/AssertionOperator"
+        },
+        "path": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tolerance"
+        }
+      },
+      "required": [
+        "path",
+        "operator"
+      ],
+      "title": "AssertionSpec",
       "type": "object"
     },
     "BudgetSpec": {
@@ -152,6 +221,27 @@
       "title": "FakeGraderSpec",
       "type": "object"
     },
+    "GraderSpec": {
+      "discriminator": {
+        "mapping": {
+          "fake": "#/$defs/FakeGraderSpec",
+          "state_assertion": "#/$defs/StateAssertionGraderSpec",
+          "test_command": "#/$defs/TestCommandGraderSpec"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FakeGraderSpec"
+        },
+        {
+          "$ref": "#/$defs/StateAssertionGraderSpec"
+        },
+        {
+          "$ref": "#/$defs/TestCommandGraderSpec"
+        }
+      ]
+    },
     "Metadata": {
       "additionalProperties": false,
       "properties": {
@@ -198,6 +288,42 @@
       "title": "OutputSpec",
       "type": "object"
     },
+    "StateAssertionGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "assertions": {
+          "items": {
+            "$ref": "#/$defs/AssertionSpec"
+          },
+          "minItems": 1,
+          "title": "Assertions",
+          "type": "array"
+        },
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "state_assertion",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "assertions"
+      ],
+      "title": "StateAssertionGraderSpec",
+      "type": "object"
+    },
     "TaskSpec": {
       "additionalProperties": false,
       "properties": {
@@ -216,6 +342,56 @@
         "input"
       ],
       "title": "TaskSpec",
+      "type": "object"
+    },
+    "TestCommandGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Command",
+          "type": "array"
+        },
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "service": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Service",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "type": {
+          "const": "test_command",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "service",
+        "command"
+      ],
+      "title": "TestCommandGraderSpec",
       "type": "object"
     }
   },
@@ -237,7 +413,7 @@
     },
     "graders": {
       "items": {
-        "$ref": "#/$defs/FakeGraderSpec"
+        "$ref": "#/$defs/GraderSpec"
       },
       "minItems": 1,
       "title": "Graders",

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CASE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
 SEMVER_PATTERN = re.compile(
@@ -60,8 +60,17 @@ class FakeAgentConfig(StrictModel):
 
 
 class AgentSpec(StrictModel):
-    adapter: Literal["fake"]
+    adapter: Literal["fake", "scripted"]
     config: FakeAgentConfig = Field(default_factory=FakeAgentConfig)
+    entrypoint: str | None = Field(default=None, min_length=3, max_length=300)
+
+    @model_validator(mode="after")
+    def entrypoint_matches_adapter(self) -> AgentSpec:
+        if self.adapter == "scripted" and self.entrypoint is None:
+            raise ValueError("scripted agents require an entrypoint such as agents.refund:run")
+        if self.adapter == "fake" and self.entrypoint is not None:
+            raise ValueError("fake agents do not accept an entrypoint")
+        return self
 
 
 class EnvironmentRef(StrictModel):
@@ -83,6 +92,51 @@ class FakeGraderSpec(StrictModel):
     critical: bool = True
 
 
+type AssertionOperator = Literal[
+    "eq",
+    "not_eq",
+    "exists",
+    "absent",
+    "contains",
+    "gte",
+    "lte",
+    "unchanged",
+    "changed",
+    "length_eq",
+]
+
+
+class AssertionSpec(StrictModel):
+    path: str = Field(min_length=1, max_length=500)
+    operator: AssertionOperator
+    expected: Any = None
+    tolerance: Annotated[float, Field(gt=0)] | None = None
+
+
+class StateAssertionGraderSpec(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["state_assertion"]
+    assertions: tuple[AssertionSpec, ...] = Field(min_length=1)
+    critical: bool = True
+
+
+class TestCommandGraderSpec(StrictModel):
+    __test__ = False  # not a pytest test class despite the name
+
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["test_command"]
+    service: str = Field(min_length=1, max_length=128)
+    command: tuple[str, ...] = Field(min_length=1)
+    timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 30
+    critical: bool = True
+
+
+type GraderSpec = Annotated[
+    FakeGraderSpec | StateAssertionGraderSpec | TestCommandGraderSpec,
+    Field(discriminator="type"),
+]
+
+
 class OutputSpec(StrictModel):
     retain_environment_on_failure: bool = False
 
@@ -95,12 +149,12 @@ class EvalCase(StrictModel):
     agent: AgentSpec
     environment: EnvironmentRef
     budgets: BudgetSpec = Field(default_factory=BudgetSpec)
-    graders: tuple[FakeGraderSpec, ...] = Field(min_length=1)
+    graders: tuple[GraderSpec, ...] = Field(min_length=1)
     output: OutputSpec = Field(default_factory=OutputSpec)
 
     @field_validator("graders")
     @classmethod
-    def unique_grader_ids(cls, value: tuple[FakeGraderSpec, ...]) -> tuple[FakeGraderSpec, ...]:
+    def unique_grader_ids(cls, value: tuple[GraderSpec, ...]) -> tuple[GraderSpec, ...]:
         ids = [grader.id for grader in value]
         if len(set(ids)) != len(ids):
             raise ValueError("grader ids must be unique")

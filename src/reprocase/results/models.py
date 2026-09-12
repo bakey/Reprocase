@@ -52,6 +52,7 @@ class GraderStatus(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"
     ERROR = "ERROR"
+    SKIPPED = "SKIPPED"
 
 
 class CaseIdentity(StrictOutputModel):
@@ -66,6 +67,22 @@ class SourceIdentity(StrictOutputModel):
     platform: str
 
 
+class ArtifactRef(StrictOutputModel):
+    media_type: str
+    path: str
+    size_bytes: int = Field(ge=0)
+    sha256: str
+
+
+class StateSnapshot(StrictOutputModel):
+    schema_version: Literal["reprocase.state/v0"] = "reprocase.state/v0"
+    captured_at: datetime
+    phase: Literal["initial", "final"]
+    canonicalization_digest: str
+    content_digest: str
+    artifact: ArtifactRef
+
+
 class RunManifest(StrictOutputModel):
     schema_version: Literal["reprocase.run-manifest/v0"] = "reprocase.run-manifest/v0"
     run_id: str
@@ -73,8 +90,18 @@ class RunManifest(StrictOutputModel):
     case: CaseIdentity
     source: SourceIdentity
     budget: dict[str, int]
-    reproducibility_level: Literal["R0"] = "R0"
-    components: tuple[Literal["fake_environment", "fake_agent", "fake_grader"], ...] = (
+    reproducibility_level: Literal["R0", "R1"] = "R0"
+    components: tuple[
+        Literal[
+            "fake_environment",
+            "fake_agent",
+            "fake_grader",
+            "compose_environment",
+            "scripted_actor",
+            "deterministic_graders",
+        ],
+        ...,
+    ] = (
         "fake_environment",
         "fake_agent",
         "fake_grader",
@@ -88,11 +115,28 @@ class FailureRecord(StrictOutputModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class AssertionResult(StrictOutputModel):
+    path: str
+    operator: str
+    status: GraderStatus
+    expected: Any = None
+    actual: Any = None
+    explanation: str = ""
+
+
 class GraderResult(StrictOutputModel):
     grader_id: str
     status: GraderStatus
     critical: bool
     explanation: str
+    grader_type: str = "fake"
+    score: float | None = None
+    expected: Any = None
+    actual: Any = None
+    evidence: tuple[Any, ...] = ()
+    assertions: tuple[AssertionResult, ...] = ()
+    grader_digest: str = ""
+    duration_ms: int = Field(default=0, ge=0)
 
 
 class RunResult(StrictOutputModel):
@@ -105,8 +149,12 @@ class RunResult(StrictOutputModel):
     started_at: datetime
     finished_at: datetime
     duration_ms: int = Field(ge=0)
+    reproducibility_level: Literal["R0", "R1"] = "R0"
     agent_output: Any = None
+    states: tuple[StateSnapshot, ...] = ()
+    state_diff: ArtifactRef | None = None
     graders: tuple[GraderResult, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
     primary_failure: FailureRecord | None = None
     secondary_failures: tuple[FailureRecord, ...] = ()
     warnings: tuple[str, ...] = ()

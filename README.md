@@ -163,7 +163,7 @@ testable increment.
 |---|---|---|
 | M0 — Contracts and run skeleton | Versioned schemas, validation, lifecycle, evidence writer, deterministic fake run | **Complete** |
 | M1 — Reproducible environment | Docker Compose lifecycle, safety precheck, dynamic ports, reset, state digests, cleanup | **Complete** |
-| M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | Planned |
+| M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | **Complete** |
 | M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | Planned |
 | M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | Planned |
 | M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | Planned |
@@ -212,6 +212,21 @@ digests:
 uv run reprocase env-check examples/support-world/environment.yaml --cycles 3
 ```
 
+### M2: deterministic evaluation loop
+
+Run the standard refund EvalCase end-to-end against the real Compose environment — correct actor
+passes, deliberately wrong actors fail with structured evidence:
+
+```bash
+uv run reprocase run examples/support-world/refund.yaml
+uv run reprocase run examples/support-world/refund.yaml --agent agents.wrong_order:run
+uv run reprocase run examples/support-world/refund.yaml --agent agents.missing_email:run
+uv run reprocase run examples/support-world/refund.yaml --agent agents.unapproved_refund:run
+```
+
+Each run writes `state.initial.json`, `state.final.json`, `state.diff.json`, grader artifacts, and
+a verdict with failure attribution to `.reprocase/runs/<run_id>/`.
+
 Current CLI exit codes:
 
 | Code | Meaning |
@@ -225,11 +240,11 @@ Current CLI exit codes:
 ## Repository layout
 
 ```text
-src/reprocase/     Python package, contracts, runner, recording, and fake adapters
+src/reprocase/     Python package, contracts, runner, recording, graders, and fake adapters
 schemas/           Exported JSON Schemas for public contracts
 examples/fake/     Deterministic M0 examples
-examples/support-world/  Minimal Compose environment (API, fixture, reset/export commands)
-tests/             Contract, runner, recording, schema, environment, and CLI tests
+examples/support-world/  Compose environment, refund EvalCase, scripted actors, grader modules
+tests/             Contract, runner, recording, schema, environment, grader, and CLI tests
 docs/              Milestone-specific design notes
 ```
 

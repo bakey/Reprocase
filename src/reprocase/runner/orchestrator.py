@@ -1,7 +1,10 @@
-"""M0 local runner using deterministic fake components."""
+"""Local runner: M0 fake flow plus the M2 deterministic Compose evaluation loop."""
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import platform
 import sys
 import time
@@ -10,16 +13,29 @@ from pathlib import Path
 from typing import Any
 
 from reprocase.case.loader import LoadedCase, load_case
-from reprocase.case.models import FakeEnvironmentDefinition
+from reprocase.case.models import (
+    ComposeEnvironmentDefinition,
+    FakeEnvironmentDefinition,
+    FakeGraderSpec,
+)
+from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
+from reprocase.environments.protocol import CommandResult, EnvironmentHandle
 from reprocase.errors import (
     CaseValidationError,
+    EnvironmentDriverError,
     FailureAttribution,
     FailureCode,
     ReprocaseError,
 )
+from reprocase.graders.engine import grader_failure_attribution, run_graders
+from reprocase.graders.protocol import GraderContext
 from reprocase.ids import new_run_id
+from reprocase.recording.artifacts import ArtifactStore
+from reprocase.recording.diff import diff_document
 from reprocase.recording.events import EventRecorder
+from reprocase.recording.state import StateRecorder
 from reprocase.results.models import (
+    ArtifactRef,
     CaseIdentity,
     FailureRecord,
     GraderResult,
@@ -29,11 +45,24 @@ from reprocase.results.models import (
     RunState,
     RunStatus,
     SourceIdentity,
+    StateSnapshot,
     Verdict,
 )
 from reprocase.results.storage import RunStorage
 from reprocase.runner.fakes import FakeAgent, FakeEnvironment, FakeGrader
+from reprocase.runner.scripted import ActorContext, load_actor
 from reprocase.runner.state_machine import RunStateMachine
+
+
+class _RunDraft:
+    def __init__(self) -> None:
+        self.failures: list[FailureRecord] = []
+        self.graders: list[GraderResult] = []
+        self.agent_output: Any = None
+        self.agent_error: str | None = None
+        self.states: list[StateSnapshot] = []
+        self.state_diff_ref: ArtifactRef | None = None
+        self.artifacts: list[ArtifactRef] = []
 
 
 def _failure_record(error: ReprocaseError) -> FailureRecord:
@@ -54,19 +83,20 @@ def _case_identity(loaded: LoadedCase) -> CaseIdentity:
     )
 
 
-def _verdict(failures: list[FailureRecord], graders: list[GraderResult]) -> Verdict:
+def _verdict(draft: _RunDraft) -> Verdict:
     invalid_attributions = {
+        FailureAttribution.CASE_ERROR,
         FailureAttribution.ENVIRONMENT_ERROR,
         FailureAttribution.GRADER_ERROR,
         FailureAttribution.RUNNER_ERROR,
     }
-    if any(failure.attribution in invalid_attributions for failure in failures):
+    if any(failure.attribution in invalid_attributions for failure in draft.failures):
         return Verdict.INVALID
-    if any(grader.status == GraderStatus.ERROR for grader in graders):
+    if any(grader.status == GraderStatus.ERROR for grader in draft.graders):
         return Verdict.INVALID
-    if any(failure.attribution == FailureAttribution.AGENT_FAILURE for failure in failures):
+    if any(failure.attribution == FailureAttribution.AGENT_FAILURE for failure in draft.failures):
         return Verdict.FAIL
-    if any(grader.status == GraderStatus.FAIL for grader in graders):
+    if any(grader.status == GraderStatus.FAIL for grader in draft.graders):
         return Verdict.FAIL
     return Verdict.PASS
 
@@ -86,51 +116,48 @@ class _RunSession:
         )
 
 
-def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs") -> RunResult:
-    """Validate and execute one M0 fake EvalCase."""
+def _record_grader_failures(draft: _RunDraft) -> None:
+    for graded in draft.graders:
+        if graded.status == GraderStatus.ERROR:
+            code = (
+                FailureCode.GRADER_FAKE_EXECUTION_FAILED
+                if graded.grader_type == "fake"
+                else FailureCode.GRADER_EXECUTION_ERROR
+            )
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.GRADER_ERROR,
+                    code=code,
+                    message=graded.explanation,
+                    details=grader_failure_attribution(graded),
+                )
+            )
+        elif graded.status == GraderStatus.FAIL:
+            code = (
+                FailureCode.TEST_COMMAND_FAILED
+                if graded.grader_type == "test_command"
+                else FailureCode.GRADER_ASSERTION_FAILED
+            )
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=code,
+                    message=graded.explanation,
+                    details=grader_failure_attribution(graded),
+                )
+            )
 
-    loaded = load_case(case_path)
-    if not isinstance(loaded.environment, FakeEnvironmentDefinition):
-        raise CaseValidationError(
-            "reprocase run supports only the fake environment driver until M2; "
-            "use reprocase env-check for docker_compose environments",
-            code=FailureCode.CASE_UNSUPPORTED_DRIVER,
-            details={"driver": loaded.environment.driver},
-        )
-    run_id = new_run_id()
-    storage = RunStorage(Path(output_root), run_id)
-    identity = _case_identity(loaded)
-    manifest = RunManifest(
-        run_id=run_id,
-        case=identity,
-        source=SourceIdentity(
-            python=sys.version.split()[0],
-            platform=f"{platform.system()}-{platform.machine()}",
-        ),
-        budget=loaded.case.budgets.model_dump(mode="json"),
-    )
-    storage.write_manifest(manifest)
-    recorder = EventRecorder(storage.events_path, run_id)
-    session = _RunSession(recorder)
-    started_at = datetime.now(UTC)
-    monotonic_started = time.monotonic_ns()
-    failures: list[FailureRecord] = []
-    graders: list[GraderResult] = []
-    agent_output: Any = None
+
+def _execute_fake(
+    session: _RunSession,
+    loaded: LoadedCase,
+    draft: _RunDraft,
+) -> None:
+    recorder = session.recorder
     environment: FakeEnvironment | None = None
-    terminal_state = RunState.COMPLETED
-
-    recorder.emit(
-        "run.created",
-        source="orchestrator",
-        payload={"case_id": identity.id, "case_digest": identity.digest},
-    )
-
     try:
-        session.transition(RunState.VALIDATING)
-        recorder.emit("case.validated", source="case_loader")
-
         session.transition(RunState.PREPARING_ENVIRONMENT)
+        assert isinstance(loaded.environment, FakeEnvironmentDefinition)
         environment = FakeEnvironment(loaded.environment.config)
         environment.prepare()
 
@@ -161,14 +188,15 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
         recorder.emit("agent.started", source="fake_agent")
         try:
             agent_result = agent.run(loaded.case.task.input)
-            agent_output = agent_result.output
+            draft.agent_output = agent_result.output
             recorder.emit(
                 "agent.completed",
                 source="fake_agent",
-                payload={"output": agent_output},
+                payload={"output": draft.agent_output},
             )
         except ReprocaseError as error:
-            failures.append(_failure_record(error))
+            draft.failures.append(_failure_record(error))
+            draft.agent_error = error.message
             recorder.emit(
                 "agent.failed",
                 source="fake_agent",
@@ -185,40 +213,318 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
 
         session.transition(RunState.GRADING)
         for spec in loaded.case.graders:
+            if not isinstance(spec, FakeGraderSpec):
+                continue  # the fake flow only exercises fake graders (M0 fixtures)
             recorder.emit(
                 "grader.started",
                 source="fake_grader",
                 payload={"grader_id": spec.id},
             )
             grader_result = FakeGrader(spec).grade()
-            graders.append(grader_result)
+            draft.graders.append(grader_result)
             recorder.emit(
                 "grader.completed",
                 source="fake_grader",
                 payload=grader_result.model_dump(mode="json"),
             )
-            if grader_result.status == GraderStatus.ERROR:
-                failures.append(
-                    FailureRecord(
-                        attribution=FailureAttribution.GRADER_ERROR,
-                        code=FailureCode.GRADER_FAKE_EXECUTION_FAILED,
-                        message=grader_result.explanation,
-                        details={"grader_id": grader_result.grader_id},
-                    )
-                )
-            elif grader_result.status == GraderStatus.FAIL:
-                failures.append(
-                    FailureRecord(
-                        attribution=FailureAttribution.AGENT_FAILURE,
-                        code=FailureCode.GRADER_ASSERTION_FAILED,
-                        message=grader_result.explanation,
-                        details={"grader_id": grader_result.grader_id},
-                    )
-                )
+        _record_grader_failures(draft)
+    finally:
+        if environment is not None:
+            environment.teardown()
+            recorder.emit("environment.teardown.completed", source="fake_environment")
 
+
+async def _execute_compose(
+    session: _RunSession,
+    loaded: LoadedCase,
+    definition: ComposeEnvironmentDefinition,
+    compose_file: Path,
+    storage: RunStorage,
+    draft: _RunDraft,
+    run_id: str,
+    entrypoint: str,
+) -> None:
+    recorder = session.recorder
+    artifacts = ArtifactStore(storage.run_dir)
+    driver = ComposeEnvironmentDriver(
+        definition,
+        compose_file=compose_file,
+        slug=loaded.case.metadata.id,
+        run_suffix=run_id[-10:],
+        work_root=storage.run_dir / "environment",
+    )
+    handle: EnvironmentHandle | None = None
+    prepared = False
+    try:
+        session.transition(RunState.PREPARING_ENVIRONMENT)
+        await driver.prepare()
+        prepared = True
+        recorder.emit(
+            "environment.prepared",
+            source="compose_environment",
+            payload={"compose_project": driver.project_name, "ports": driver.ports},
+        )
+
+        session.transition(RunState.STARTING_ENVIRONMENT)
+        handle = await driver.start()
+        recorder.emit(
+            "environment.started",
+            source="compose_environment",
+            payload={"compose_project": handle.project_name, "service_urls": handle.service_urls},
+        )
+
+        session.transition(RunState.RESTORING_ENVIRONMENT)
+        await driver.restore(handle)
+        recorder.emit("environment.restored", source="compose_environment")
+
+        session.transition(RunState.HEALTHCHECKING)
+        health = await driver.healthcheck(handle)
+        recorder.emit(
+            "environment.healthy",
+            source="compose_environment",
+            payload={"detail": health.detail, "attempts": health.attempts},
+        )
+
+        session.transition(RunState.CAPTURING_INITIAL_STATE)
+        states = StateRecorder(storage.run_dir, driver, handle)
+        initial_snapshot, initial_document = await states.capture("initial")
+        draft.states.append(initial_snapshot)
+        recorder.emit(
+            "environment.state.captured",
+            source="compose_environment",
+            payload={"phase": "initial", "content_digest": initial_snapshot.content_digest},
+        )
+
+        session.transition(RunState.LOADING_AGENT_AND_TOOLS)
+        actor = load_actor(entrypoint, loaded.environment_path.parent)
+
+        session.transition(RunState.RUNNING_AGENT)
+        recorder.emit("agent.started", source="scripted_actor", payload={"entrypoint": entrypoint})
+        base_url = (
+            handle.service_urls[sorted(handle.service_urls)[0]] if handle.service_urls else None
+        )
+        context = ActorContext(
+            run_id=run_id,
+            task=loaded.case.task.input,
+            base_url=base_url,
+            service_urls=handle.service_urls,
+            ports=handle.ports,
+        )
+        try:
+            draft.agent_output = await asyncio.to_thread(actor, context)
+            recorder.emit(
+                "agent.completed",
+                source="scripted_actor",
+                payload={"output": draft.agent_output},
+            )
+        except Exception as exc:  # actor failures are agent failures, never infra failures
+            message = f"Scripted actor raised {type(exc).__name__}: {exc}"
+            draft.agent_error = message
+            draft.failures.append(
+                FailureRecord(
+                    attribution=FailureAttribution.AGENT_FAILURE,
+                    code=FailureCode.AGENT_EXCEPTION,
+                    message=message,
+                    details={"entrypoint": entrypoint},
+                )
+            )
+            recorder.emit(
+                "agent.failed",
+                source="scripted_actor",
+                payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+            )
+
+        session.transition(RunState.CAPTURING_FINAL_STATE)
+        final_snapshot, final_document = await states.capture("final")
+        draft.states.append(final_snapshot)
+        recorder.emit(
+            "environment.state.captured",
+            source="compose_environment",
+            payload={"phase": "final", "content_digest": final_snapshot.content_digest},
+        )
+
+        diff = diff_document(initial_document, final_document)
+        diff_payload = json.dumps(diff, ensure_ascii=False, indent=2, sort_keys=True).encode(
+            "utf-8"
+        )
+        (storage.run_dir / "state.diff.json").write_bytes(diff_payload)
+        draft.state_diff_ref = ArtifactRef(
+            media_type="application/json",
+            path="state.diff.json",
+            size_bytes=len(diff_payload),
+            sha256=hashlib.sha256(diff_payload).hexdigest(),
+        )
+
+        session.transition(RunState.GRADING)
+        grader_context = GraderContext(
+            run_id=run_id,
+            initial_snapshot=initial_snapshot,
+            final_snapshot=final_snapshot,
+            initial_document=initial_document,
+            final_document=final_document,
+            diff_ref=draft.state_diff_ref,
+            agent_error=draft.agent_error,
+        )
+
+        async def exec_fn(service: str, argv: list[str], timeout: float) -> CommandResult:
+            return await driver.exec(
+                handle, service, argv, timeout, timeout_code=FailureCode.GRADER_TIMEOUT
+            )
+
+        draft.graders.extend(
+            await run_graders(
+                loaded.case.graders,
+                grader_context,
+                exec_fn=exec_fn,
+                artifacts=artifacts,
+                recorder=recorder,
+            )
+        )
+        _record_grader_failures(draft)
+        draft.artifacts.extend(artifacts.created)
+
+        log_paths = await driver.collect_logs(handle)
+        for log_path in log_paths:
+            content = log_path.read_bytes()
+            relative = log_path.relative_to(storage.run_dir).as_posix()
+            draft.artifacts.append(
+                ArtifactRef(
+                    media_type="text/plain",
+                    path=relative,
+                    size_bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+            )
+        recorder.emit(
+            "environment.logs.collected",
+            source="compose_environment",
+            payload={"count": len(log_paths)},
+        )
+    finally:
+        # A failed `up` can still leave containers behind: always try teardown
+        # once prepare succeeded, and never let teardown mask the primary failure.
+        teardown_handle = handle
+        if teardown_handle is None and prepared:
+            teardown_handle = EnvironmentHandle(
+                driver="docker_compose",
+                project_name=driver.project_name,
+                compose_file=driver.compose_file,
+                env_file=driver.env_file,
+                work_dir=driver.work_dir,
+            )
+        if teardown_handle is not None:
+            try:
+                await driver.teardown(teardown_handle)
+                recorder.emit("environment.teardown.completed", source="compose_environment")
+            except EnvironmentDriverError as exc:
+                draft.failures.append(_failure_record(exc))
+
+
+def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
+    """Return the effective scripted entrypoint, or None for the fake flow."""
+
+    adapter = loaded.case.agent.adapter
+    if isinstance(loaded.environment, FakeEnvironmentDefinition):
+        if adapter != "fake" or agent_override is not None:
+            raise CaseValidationError(
+                "the fake environment supports only the fake agent adapter",
+                code=FailureCode.CASE_UNSUPPORTED_DRIVER,
+                details={"adapter": adapter},
+            )
+        return None
+    if adapter != "scripted":
+        raise CaseValidationError(
+            "docker_compose runs require the scripted agent adapter in M2",
+            code=FailureCode.CASE_UNSUPPORTED_DRIVER,
+            details={"adapter": adapter},
+        )
+    entrypoint = agent_override or loaded.case.agent.entrypoint
+    if entrypoint is None:
+        raise CaseValidationError(
+            "scripted runs require agent.entrypoint or an --agent override",
+            code=FailureCode.CASE_ENTRYPOINT_INVALID,
+        )
+    return entrypoint
+
+
+def run_case(
+    case_path: Path | str,
+    output_root: Path | str = ".reprocase/runs",
+    *,
+    agent_override: str | None = None,
+) -> RunResult:
+    """Validate and execute one EvalCase (fake or docker_compose driver)."""
+
+    loaded = load_case(case_path)
+    entrypoint = _validate_run_request(loaded, agent_override)
+    is_fake = entrypoint is None
+
+    run_id = new_run_id()
+    storage = RunStorage(Path(output_root), run_id)
+    identity = _case_identity(loaded)
+    source = SourceIdentity(
+        python=sys.version.split()[0],
+        platform=f"{platform.system()}-{platform.machine()}",
+    )
+    budget = loaded.case.budgets.model_dump(mode="json")
+    if is_fake:
+        manifest = RunManifest(
+            run_id=run_id,
+            case=identity,
+            source=source,
+            budget=budget,
+            reproducibility_level="R0",
+            components=("fake_environment", "fake_agent", "fake_grader"),
+        )
+    else:
+        manifest = RunManifest(
+            run_id=run_id,
+            case=identity,
+            source=source,
+            budget=budget,
+            reproducibility_level="R1",
+            components=("compose_environment", "scripted_actor", "deterministic_graders"),
+        )
+    storage.write_manifest(manifest)
+    recorder = EventRecorder(storage.events_path, run_id)
+    session = _RunSession(recorder)
+    started_at = datetime.now(UTC)
+    monotonic_started = time.monotonic_ns()
+    draft = _RunDraft()
+    terminal_state = RunState.COMPLETED
+
+    recorder.emit(
+        "run.created",
+        source="orchestrator",
+        payload={"case_id": identity.id, "case_digest": identity.digest},
+    )
+
+    try:
+        session.transition(RunState.VALIDATING)
+        recorder.emit("case.validated", source="case_loader")
+        if is_fake:
+            _execute_fake(session, loaded, draft)
+        else:
+            assert isinstance(loaded.environment, ComposeEnvironmentDefinition)
+            compose_file = loaded.compose_path or resolve_compose_file(
+                loaded.environment, loaded.environment_path.parent
+            )
+            assert entrypoint is not None
+            asyncio.run(
+                _execute_compose(
+                    session,
+                    loaded,
+                    loaded.environment,
+                    compose_file,
+                    storage,
+                    draft,
+                    run_id,
+                    entrypoint,
+                )
+            )
     except KeyboardInterrupt:
         terminal_state = RunState.CANCELLED
-        failures.append(
+        draft.failures.append(
             FailureRecord(
                 attribution=FailureAttribution.RUNNER_ERROR,
                 code=FailureCode.RUN_CANCELLED,
@@ -229,7 +535,7 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
         recorder.emit("run.cancelled", source="orchestrator")
     except ReprocaseError as error:
         terminal_state = RunState.COMPLETED_WITH_ERROR
-        failures.append(_failure_record(error))
+        draft.failures.append(_failure_record(error))
         session.transition(RunState.FAILED)
         recorder.emit(
             "run.failed",
@@ -243,7 +549,7 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
             code=FailureCode.RUNNER_INTERNAL_ERROR,
             message=f"Unexpected runner error: {type(error).__name__}: {error}",
         )
-        failures.append(failure)
+        draft.failures.append(failure)
         session.transition(RunState.FAILED)
         recorder.emit(
             "run.failed",
@@ -259,29 +565,32 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
             RunState.COMPLETED_WITH_ERROR,
         }:
             session.transition(RunState.COLLECTING_ARTIFACTS)
-        recorder.emit("artifacts.collected", source="orchestrator", payload={"count": 0})
-
+        recorder.emit(
+            "artifacts.collected",
+            source="orchestrator",
+            payload={"count": len(draft.artifacts)},
+        )
         if session.machine.current == RunState.COLLECTING_ARTIFACTS:
             session.transition(RunState.TEARING_DOWN)
-        if environment is not None:
-            environment.teardown()
-            recorder.emit("environment.teardown.completed", source="fake_environment")
 
     if session.machine.current == RunState.TEARING_DOWN:
         session.transition(RunState.WRITING_RESULT)
 
-    verdict = _verdict(failures, graders)
+    verdict = _verdict(draft)
     if terminal_state == RunState.CANCELLED:
         status = RunStatus.CANCELLED
         verdict = Verdict.INVALID
     elif verdict == Verdict.INVALID or terminal_state == RunState.COMPLETED_WITH_ERROR:
         status = RunStatus.COMPLETED_WITH_ERROR
         terminal_state = RunState.COMPLETED_WITH_ERROR
+        if verdict == Verdict.PASS:
+            verdict = Verdict.INVALID  # an aborted run must never report PASS
     else:
         status = RunStatus.COMPLETED
         terminal_state = RunState.COMPLETED
 
     finished_at = datetime.now(UTC)
+    warnings = ("M0 uses fake components and provides R0 evidence only.",) if is_fake else ()
     result = RunResult(
         run_id=run_id,
         status=status,
@@ -291,11 +600,15 @@ def run_case(case_path: Path | str, output_root: Path | str = ".reprocase/runs")
         started_at=started_at,
         finished_at=finished_at,
         duration_ms=max(0, (time.monotonic_ns() - monotonic_started) // 1_000_000),
-        agent_output=agent_output,
-        graders=tuple(graders),
-        primary_failure=failures[0] if failures else None,
-        secondary_failures=tuple(failures[1:]),
-        warnings=("M0 uses fake components and provides R0 evidence only.",),
+        reproducibility_level="R0" if is_fake else "R1",
+        agent_output=draft.agent_output,
+        states=tuple(draft.states),
+        state_diff=draft.state_diff_ref,
+        graders=tuple(draft.graders),
+        artifacts=tuple(draft.artifacts),
+        primary_failure=draft.failures[0] if draft.failures else None,
+        secondary_failures=tuple(draft.failures[1:]),
+        warnings=warnings,
     )
     storage.write_result(result)
     session.transition(terminal_state)
