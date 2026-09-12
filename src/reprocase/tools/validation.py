@@ -6,6 +6,7 @@ INVALID; they must never surface as agent business failures.
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -18,28 +19,38 @@ from reprocase.tools.protocol import Tool
 TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
 
+def _invalid(message: str, tool: Any) -> CaseValidationError:
+    return CaseValidationError(
+        message,
+        code=FailureCode.CASE_SCHEMA_INVALID,
+        details={"tool": repr(tool)},
+    )
+
+
 def validate_tools(tools: list[Tool], allow: tuple[str, ...]) -> None:
     for tool in tools:
-        if not TOOL_NAME_PATTERN.fullmatch(tool.name):
-            raise CaseValidationError(
-                f"Provider returned a tool with an invalid name: {tool.name!r}",
-                code=FailureCode.CASE_SCHEMA_INVALID,
-                details={"tool": tool.name},
+        name = getattr(tool, "name", None)
+        if not isinstance(name, str) or not TOOL_NAME_PATTERN.fullmatch(name):
+            raise _invalid(f"Provider returned a tool with an invalid name: {name!r}", tool)
+        if not isinstance(getattr(tool, "description", None), str):
+            raise _invalid(f"Tool {name!r} has no string description", tool)
+        schema_value = getattr(tool, "input_schema", None)
+        if not isinstance(schema_value, Mapping):
+            raise _invalid(f"Tool {name!r} has a non-mapping input schema", tool)
+        invoke = getattr(tool, "invoke", None)
+        if not callable(invoke):
+            raise _invalid(f"Tool {name!r} has no callable invoke", tool)
+        if not inspect.iscoroutinefunction(invoke):
+            raise _invalid(
+                f"Tool {name!r} must define 'async def invoke' (broker awaits every invocation)",
+                tool,
             )
-        if not isinstance(tool.input_schema, Mapping):
-            raise CaseValidationError(
-                f"Tool {tool.name!r} has a non-mapping input schema",
-                code=FailureCode.CASE_SCHEMA_INVALID,
-                details={"tool": tool.name},
-            )
-        schema: dict[str, Any] = dict(tool.input_schema)
+        schema: dict[str, Any] = dict(schema_value)
         try:
             jsonschema.validators.validator_for(schema).check_schema(schema)
         except jsonschema.SchemaError as exc:
-            raise CaseValidationError(
-                f"Tool {tool.name!r} has an invalid input schema: {exc.message}",
-                code=FailureCode.CASE_SCHEMA_INVALID,
-                details={"tool": tool.name},
+            raise _invalid(
+                f"Tool {name!r} has an invalid input schema: {exc.message}", tool
             ) from exc
     known = {tool.name for tool in tools}
     missing = [name for name in allow if name not in known]

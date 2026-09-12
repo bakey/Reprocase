@@ -151,6 +151,21 @@ class ToolBroker:
             )
             self._emit_failed(error, started)
             raise error from exc
+        except ReprocaseError as exc:
+            # structured infrastructure/case errors keep their original code
+            # and attribution — they must never be re-labeled as tool (agent)
+            # failures; CancelledError is BaseException and passes through
+            self.recorder.emit(
+                "tool.call.failed",
+                source="tool_broker",
+                payload={
+                    "tool": name,
+                    "code": exc.code,
+                    "message": exc.message,
+                    "duration_ms": max(0, (time.monotonic_ns() - started) // 1_000_000),
+                },
+            )
+            raise
         except Exception as exc:
             error = ToolCallError(
                 f"Tool {name!r} raised {type(exc).__name__}: {exc}",

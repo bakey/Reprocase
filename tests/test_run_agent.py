@@ -395,3 +395,91 @@ def test_two_cases_same_package_run_sequentially(tmp_path: Path) -> None:
     assert first.verdict == Verdict.PASS
     assert second.verdict == Verdict.PASS
     assert _residual_resources() == []
+
+
+def test_sync_invoke_tool_makes_run_invalid(tmp_path: Path) -> None:
+    """P1: a tool with a synchronous invoke is a provider defect, not agent FAIL."""
+
+    (tmp_path / "sync_provider.py").write_text(
+        """\
+class SyncTool:
+    name = "order.get"
+    description = "sync invoke"
+    input_schema = {"type": "object"}
+
+    def invoke(self, arguments):
+        return {}
+
+
+def create_tools(environment):
+    return [SyncTool()]
+""",
+        encoding="utf-8",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["tools"]["provider"] = "sync_provider:create_tools"
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.INVALID
+    assert result.status == RunStatus.COMPLETED_WITH_ERROR
+    assert result.primary_failure is not None
+    assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
+    assert result.primary_failure.code == FailureCode.CASE_SCHEMA_INVALID
+    assert _residual_resources() == []
+
+
+def test_infra_error_from_tool_keeps_attribution(tmp_path: Path) -> None:
+    """P1: a ReprocaseError raised inside invoke keeps its code and attribution."""
+
+    (tmp_path / "infra_provider.py").write_text(
+        """\
+from reprocase.errors import FailureAttribution, FailureCode, ReprocaseError
+
+
+class InfraTool:
+    name = "order.get"
+    description = "raises an infrastructure error"
+    input_schema = {"type": "object"}
+
+    async def invoke(self, arguments):
+        raise ReprocaseError(
+            "environment exec channel broken",
+            code=FailureCode.ENV_STATE_CAPTURE_FAILED,
+            attribution=FailureAttribution.ENVIRONMENT_ERROR,
+        )
+
+
+def create_tools(environment):
+    return [InfraTool()]
+""",
+        encoding="utf-8",
+    )
+    entrypoint = _write_agent(
+        tmp_path,
+        "agent_calls_infra_tool",
+        """\
+async def run(task, tools, context):
+    await tools.call("order.get", {"order_id": "ORD-1001"})
+    return {"message": "unreachable"}
+""",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["tools"]["provider"] = "infra_provider:create_tools"
+        case["tools"]["allow"] = ["order.get"]
+        case["agent"]["entrypoint"] = entrypoint
+
+    output = tmp_path / "runs"
+    result = run_case(_variant_case(tmp_path, mutate), output)
+
+    assert result.verdict == Verdict.INVALID
+    assert result.status == RunStatus.COMPLETED_WITH_ERROR
+    assert result.primary_failure is not None
+    assert result.primary_failure.attribution == FailureAttribution.ENVIRONMENT_ERROR
+    assert result.primary_failure.code == FailureCode.ENV_STATE_CAPTURE_FAILED
+    failed = [e for e in _events(result, output) if e["type"] == "tool.call.failed"]
+    assert failed[-1]["payload"]["code"] == FailureCode.ENV_STATE_CAPTURE_FAILED
+    assert _residual_resources() == []

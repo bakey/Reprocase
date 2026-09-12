@@ -168,3 +168,30 @@ def test_registry_rejects_duplicate_names() -> None:
 
     with pytest.raises(ReprocaseError):
         ToolRegistry([StubTool(), StubTool()])
+
+
+def test_reprocase_error_from_invoke_is_not_rewrapped(tmp_path: Path) -> None:
+    from reprocase.errors import FailureAttribution, ReprocaseError
+
+    infra_error = ReprocaseError(
+        "environment exec failed",
+        code=FailureCode.ENV_COMPOSE_INVALID,
+        attribution=FailureAttribution.ENVIRONMENT_ERROR,
+    )
+    broker = _broker(tmp_path, StubTool(error=infra_error))
+
+    with pytest.raises(ReprocaseError) as excinfo:
+        _run(broker.call("order.get", {}))
+
+    assert excinfo.value is infra_error  # original error, unwrapped
+    assert excinfo.value.code == FailureCode.ENV_COMPOSE_INVALID
+    assert excinfo.value.attribution == FailureAttribution.ENVIRONMENT_ERROR
+    failed = [e for e in _events(tmp_path) if e["type"] == "tool.call.failed"]
+    assert failed[-1]["payload"]["code"] == FailureCode.ENV_COMPOSE_INVALID
+
+
+def test_cancelled_error_passes_through(tmp_path: Path) -> None:
+    broker = _broker(tmp_path, StubTool(error=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(broker.call("order.get", {}))
