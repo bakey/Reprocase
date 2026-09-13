@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
+import os
 import platform
 import sys
 import time
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,6 +68,46 @@ from reprocase.tools.validation import validate_tools
 from reprocase.vcs import git_identity
 
 CANCELLATION_GRACE_SECONDS = 5.0
+TEARDOWN_WAIT_SECONDS = 60.0
+TEARDOWN_CANCEL_GRACE_SECONDS = 30.0
+SHUTDOWN_DRAIN_SECONDS = 90.0
+STRAGGLER_DRAIN_SECONDS = 1.0
+
+
+def _run_loop(coro: Coroutine[Any, Any, None]) -> None:
+    """Run the compose flow on a private loop with a bounded shutdown.
+
+    ``asyncio.run`` cancels and *awaits* every pending task on close, so an
+    agent that keeps swallowing cancellation would block result persistence
+    indefinitely. Here the shutdown is bounded: the main coroutine gets a
+    generous drain window (its cleanup has internal timeouts), everything
+    else gets a courtesy second, and the loop closes regardless.
+    """
+
+    loop = asyncio.new_event_loop()
+    interrupt: BaseException | None = None
+    main = loop.create_task(coro)
+    try:
+        loop.run_until_complete(main)
+    except KeyboardInterrupt as exc:
+        interrupt = exc
+    if not main.done():
+        # cancel ONLY the main coroutine: its own cleanup owns the shutdown
+        # order (close broker -> cancel agent -> collect logs -> teardown)
+        main.cancel()
+        loop.run_until_complete(asyncio.wait({main}, timeout=SHUTDOWN_DRAIN_SECONDS))
+    # anything still pending at this point is an orphan the flow already
+    # abandoned; it gets a courtesy second, never a blocking wait (P1-1)
+    stragglers = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    for task in stragglers:
+        task.cancel()
+    if stragglers:
+        loop.run_until_complete(asyncio.wait(stragglers, timeout=STRAGGLER_DRAIN_SECONDS))
+    if main.done() and not main.cancelled():
+        main.exception()  # retrieve, avoiding "never retrieved" warnings
+    loop.close()
+    if interrupt is not None:
+        raise interrupt
 
 
 class _RunDraft:
@@ -97,6 +140,7 @@ def _case_identity(loaded: LoadedCase) -> CaseIdentity:
         version=loaded.case.metadata.version,
         digest=loaded.digest,
         path=loaded.path.name,
+        relative_path=os.path.relpath(loaded.path, Path.cwd()),
     )
 
 
@@ -257,6 +301,27 @@ def _execute_fake(
             recorder.emit("environment.teardown.completed", source="fake_environment")
 
 
+async def _observe_completion(task: asyncio.Task[None], timeout: float) -> None:
+    """Wait for ``task`` to finish, up to ``timeout`` seconds.
+
+    Never raises the task's own exception and never forwards cancellation to
+    the task itself: callers inspect the task afterwards for the outcome.
+    """
+
+    loop = asyncio.get_running_loop()
+    waiter: asyncio.Future[None] = loop.create_future()
+
+    def _complete(_task: asyncio.Task[None]) -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    task.add_done_callback(_complete)
+    try:
+        await asyncio.wait_for(asyncio.shield(waiter), timeout)
+    except TimeoutError:
+        return
+
+
 async def _run_scripted_agent(
     session: _RunSession,
     loaded: LoadedCase,
@@ -321,6 +386,7 @@ async def _run_python_agent(
     recorder = session.recorder
     import_root = loaded.environment_path.parent
     tools_spec = loaded.case.tools
+    redact_keys = loaded.case.output.redaction.keys
     assert tools_spec is not None  # enforced by EvalCase validation
 
     # Import isolation spans provider loading, provider execution, adapter
@@ -337,12 +403,17 @@ async def _run_python_agent(
             max_calls=loaded.case.budgets.max_tool_calls,
             tool_timeout_seconds=float(loaded.case.budgets.tool_timeout_seconds),
             recorder=recorder,
+            redact_keys=redact_keys,
         )
         adapter = PythonAgentAdapter(entrypoint, import_root)
 
         async def emit_agent(payload: dict[str, Any]) -> None:
             event_type = "agent.model.usage" if "usage" in payload else "agent.message"
-            recorder.emit(event_type, source="python_agent", payload=redact(payload))
+            recorder.emit(
+                event_type,
+                source="python_agent",
+                payload=redact(payload, extra_keys=redact_keys),
+            )
 
         context = AgentContext(
             run_id=run_id,
@@ -370,111 +441,142 @@ async def _run_python_agent(
         # Two-phase wall time: asyncio.wait never raises task exceptions, so
         # agent-side TimeoutErrors stay distinguishable from a real expiry.
         agent_task = asyncio.create_task(adapter.run(loaded.case.task.input, broker, context))
-        done, _pending = await asyncio.wait({agent_task}, timeout=wall_time)
-        if not done:
-            # wall time expired: cancel, then allow a bounded grace period for
-            # the agent to honour the cancellation (we cannot force-kill an
-            # in-process coroutine)
-            agent_task.cancel()
-            settled, _ = await asyncio.wait({agent_task}, timeout=CANCELLATION_GRACE_SECONDS)
-            ignored = not bool(settled)
-            if settled and not agent_task.cancelled():
-                agent_task.exception()  # retrieve to avoid "never retrieved" warnings
-            message = f"Agent exceeded its wall time of {wall_time}s"
-            if ignored:
-                warning = (
-                    f"Agent ignored cancellation for {CANCELLATION_GRACE_SECONDS:.0f}s after "
-                    "wall-time expiry; its orphaned task may still be running in-process"
+        try:
+            done, _pending = await asyncio.wait({agent_task}, timeout=wall_time)
+            if not done:
+                # wall time expired: cancel, then allow a bounded grace period
+                # for the agent to honour the cancellation (we cannot
+                # force-kill an in-process coroutine)
+                agent_task.cancel()
+                settled, _ = await asyncio.wait({agent_task}, timeout=CANCELLATION_GRACE_SECONDS)
+                ignored = not bool(settled)
+                if settled and not agent_task.cancelled():
+                    agent_task.exception()  # retrieve to avoid "never retrieved" warnings
+                message = f"Agent exceeded its wall time of {wall_time}s"
+                if ignored:
+                    warning = (
+                        f"Agent ignored cancellation for {CANCELLATION_GRACE_SECONDS:.0f}s "
+                        "after wall-time expiry; its orphaned task may still be running "
+                        "in-process"
+                    )
+                    draft.warnings.append(warning)
+                    message += " (cancellation ignored)"
+                draft.agent_error = message
+                draft.failures.append(
+                    FailureRecord(
+                        attribution=FailureAttribution.AGENT_FAILURE,
+                        code=FailureCode.AGENT_TIMEOUT,
+                        message=message,
+                        details={
+                            "entrypoint": entrypoint,
+                            "wall_time_seconds": wall_time,
+                            "ignored_cancellation": ignored,
+                        },
+                    )
                 )
-                draft.warnings.append(warning)
-                message += " (cancellation ignored)"
-            draft.agent_error = message
-            draft.failures.append(
-                FailureRecord(
-                    attribution=FailureAttribution.AGENT_FAILURE,
-                    code=FailureCode.AGENT_TIMEOUT,
-                    message=message,
-                    details={
-                        "entrypoint": entrypoint,
+                recorder.emit(
+                    "agent.timed_out",
+                    source="python_agent",
+                    payload={
                         "wall_time_seconds": wall_time,
+                        "tool_calls": broker.calls_made,
                         "ignored_cancellation": ignored,
                     },
                 )
-            )
-            recorder.emit(
-                "agent.timed_out",
-                source="python_agent",
-                payload={
-                    "wall_time_seconds": wall_time,
-                    "tool_calls": broker.calls_made,
-                    "ignored_cancellation": ignored,
-                },
-            )
-        else:
-            try:
-                agent_result = agent_task.result()
-                draft.agent_output = agent_result.output
-                model_usage = agent_result.usage
-                recorder.emit(
-                    "agent.completed",
-                    source="python_agent",
-                    payload={
-                        "output": redact(draft.agent_output),
-                        "summary": agent_result.summary,
-                    },
-                )
-            except TimeoutError as exc:
-                # the agent (or its SDK) raised TimeoutError itself: an ordinary
-                # agent exception, not a wall-time expiry
-                message = f"Agent raised TimeoutError: {exc}"
-                draft.agent_error = message
-                draft.failures.append(
-                    FailureRecord(
-                        attribution=FailureAttribution.AGENT_FAILURE,
-                        code=FailureCode.AGENT_EXCEPTION,
-                        message=message,
-                        details={"entrypoint": entrypoint},
+            else:
+                try:
+                    agent_result = agent_task.result()
+                    draft.agent_output = agent_result.output
+                    model_usage = agent_result.usage
+                    recorder.emit(
+                        "agent.completed",
+                        source="python_agent",
+                        payload={
+                            "output": redact(draft.agent_output, extra_keys=redact_keys),
+                            "summary": agent_result.summary,
+                        },
                     )
-                )
-                recorder.emit(
-                    "agent.failed",
-                    source="python_agent",
-                    payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-                )
-            except ReprocaseError as exc:
-                if exc.attribution != FailureAttribution.AGENT_FAILURE:
-                    raise  # case/environment defects must not be re-labeled as agent failures
-                # Structured failures escaping the agent (tool errors, invalid output)
-                draft.agent_error = exc.message
-                draft.failures.append(
-                    FailureRecord(
-                        attribution=FailureAttribution.AGENT_FAILURE,
-                        code=exc.code,
-                        message=exc.message,
-                        details=exc.details,
+                except asyncio.CancelledError:
+                    # the agent cancelled itself (or awaited a cancelled
+                    # subtask): an agent-domain failure, never a runner
+                    # cancellation — evidence collection continues (P1-4)
+                    message = "Agent cancelled itself before completing"
+                    draft.agent_error = message
+                    draft.failures.append(
+                        FailureRecord(
+                            attribution=FailureAttribution.AGENT_FAILURE,
+                            code=FailureCode.AGENT_EXCEPTION,
+                            message=message,
+                            details={"entrypoint": entrypoint},
+                        )
                     )
-                )
-                recorder.emit(
-                    "agent.failed",
-                    source="python_agent",
-                    payload={"code": exc.code, "message": exc.message},
-                )
-            except Exception as exc:  # untrusted-shape but trusted-code agent bugs
-                message = f"Agent raised {type(exc).__name__}: {exc}"
-                draft.agent_error = message
-                draft.failures.append(
-                    FailureRecord(
-                        attribution=FailureAttribution.AGENT_FAILURE,
-                        code=FailureCode.AGENT_EXCEPTION,
-                        message=message,
-                        details={"entrypoint": entrypoint},
+                    recorder.emit(
+                        "agent.failed",
+                        source="python_agent",
+                        payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
                     )
-                )
-                recorder.emit(
-                    "agent.failed",
-                    source="python_agent",
-                    payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
-                )
+                except TimeoutError as exc:
+                    # the agent (or its SDK) raised TimeoutError itself: an ordinary
+                    # agent exception, not a wall-time expiry
+                    message = f"Agent raised TimeoutError: {exc}"
+                    draft.agent_error = message
+                    draft.failures.append(
+                        FailureRecord(
+                            attribution=FailureAttribution.AGENT_FAILURE,
+                            code=FailureCode.AGENT_EXCEPTION,
+                            message=message,
+                            details={"entrypoint": entrypoint},
+                        )
+                    )
+                    recorder.emit(
+                        "agent.failed",
+                        source="python_agent",
+                        payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+                    )
+                except ReprocaseError as exc:
+                    if exc.attribution != FailureAttribution.AGENT_FAILURE:
+                        raise  # case/environment defects must not be re-labeled as agent failures
+                    # Structured failures escaping the agent (tool errors, invalid output)
+                    draft.agent_error = exc.message
+                    draft.failures.append(
+                        FailureRecord(
+                            attribution=FailureAttribution.AGENT_FAILURE,
+                            code=exc.code,
+                            message=exc.message,
+                            details=exc.details,
+                        )
+                    )
+                    recorder.emit(
+                        "agent.failed",
+                        source="python_agent",
+                        payload={"code": exc.code, "message": exc.message},
+                    )
+                except Exception as exc:  # untrusted-shape but trusted-code agent bugs
+                    message = f"Agent raised {type(exc).__name__}: {exc}"
+                    draft.agent_error = message
+                    draft.failures.append(
+                        FailureRecord(
+                            attribution=FailureAttribution.AGENT_FAILURE,
+                            code=FailureCode.AGENT_EXCEPTION,
+                            message=message,
+                            details={"entrypoint": entrypoint},
+                        )
+                    )
+                    recorder.emit(
+                        "agent.failed",
+                        source="python_agent",
+                        payload={"code": FailureCode.AGENT_EXCEPTION, "message": message},
+                    )
+        finally:
+            # ownership of the agent task (P1-1/P1-3): the broker rejects all
+            # further calls the moment the agent phase ends, and a still-
+            # running task gets one bounded cancel+wait — whether we got here
+            # normally, via wall-time expiry, or via runner cancellation.
+            # Teardown only starts after this point.
+            broker.close()
+            if not agent_task.done():
+                agent_task.cancel()
+                await asyncio.wait({agent_task}, timeout=CANCELLATION_GRACE_SECONDS)
 
         if broker.budget_exceeded and not any(
             failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
@@ -628,25 +730,28 @@ async def _execute_compose(
         )
         _record_grader_failures(draft)
         draft.artifacts.extend(artifacts.created)
-
-        log_paths = await driver.collect_logs(handle)
-        if driver.log_truncated:
-            draft.warnings.append("Environment logs exceeded 10 MiB and were truncated to the tail")
-        for log_path in log_paths:
-            content = log_path.read_bytes()
-            relative = log_path.relative_to(storage.run_dir).as_posix()
-            draft.artifacts.append(
-                ArtifactRef(
-                    media_type="text/plain",
-                    path=relative,
-                    size_bytes=len(content),
-                    sha256=hashlib.sha256(content).hexdigest(),
-                )
-            )
+    except ReprocaseError as exc:
+        # lifecycle failures are recorded BEFORE any cleanup failure so the
+        # earliest conclusion-blocking error stays primary (§16.2, P2-2)
+        draft.failures.append(_failure_record(exc))
+        session.transition(RunState.FAILED)
         recorder.emit(
-            "environment.logs.collected",
-            source="compose_environment",
-            payload={"count": len(log_paths)},
+            "run.failed",
+            source="orchestrator",
+            payload={"code": exc.code, "message": exc.message},
+        )
+    except Exception as exc:  # defensive boundary: preserve evidence for unknown bugs
+        failure = FailureRecord(
+            attribution=FailureAttribution.RUNNER_ERROR,
+            code=FailureCode.RUNNER_INTERNAL_ERROR,
+            message=f"Unexpected runner error: {type(exc).__name__}: {exc}",
+        )
+        draft.failures.append(failure)
+        session.transition(RunState.FAILED)
+        recorder.emit(
+            "run.failed",
+            source="orchestrator",
+            payload={"code": failure.code, "message": failure.message},
         )
     finally:
         # A failed `up` can still leave containers behind: always try teardown
@@ -661,17 +766,66 @@ async def _execute_compose(
                 work_dir=driver.work_dir,
             )
         if teardown_handle is not None:
+            # best-effort log collection FIRST, while containers still exist
+            # (P2-3); a fallback handle suffices because compose logs only
+            # needs the project name and env file
+            try:
+                log_paths = await driver.collect_logs(teardown_handle)
+                if driver.log_truncated:
+                    draft.warnings.append(
+                        "Environment logs exceeded 10 MiB and were truncated to the tail"
+                    )
+                for log_path in log_paths:
+                    content = log_path.read_bytes()
+                    relative = log_path.relative_to(storage.run_dir).as_posix()
+                    draft.artifacts.append(
+                        ArtifactRef(
+                            media_type="text/plain",
+                            path=relative,
+                            size_bytes=len(content),
+                            sha256=hashlib.sha256(content).hexdigest(),
+                        )
+                    )
+                recorder.emit(
+                    "environment.logs.collected",
+                    source="compose_environment",
+                    payload={"count": len(log_paths)},
+                )
+            except Exception as log_error:  # diagnostics only; never masks the real failure
+                draft.warnings.append(
+                    f"Could not collect environment logs: {type(log_error).__name__}: {log_error}"
+                )
+
+            # a single teardown task with bounded waits (P2-1): cancellation
+            # re-waits on the SAME task — never two concurrent `compose down`s.
+            # The waits only observe completion; they neither re-raise the
+            # task's error nor forward cancellation to it.
+            teardown_task = asyncio.create_task(driver.teardown(teardown_handle))
+            cancelled_mid_teardown = False
+            try:
+                await _observe_completion(teardown_task, TEARDOWN_WAIT_SECONDS)
+            except asyncio.CancelledError:
+                cancelled_mid_teardown = True
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _observe_completion(teardown_task, TEARDOWN_CANCEL_GRACE_SECONDS)
             torn_down = False
-            for _attempt in range(2):  # shielded, one retry: best effort (§12.4)
-                try:
-                    await asyncio.shield(driver.teardown(teardown_handle))
+            if teardown_task.done() and not teardown_task.cancelled():
+                teardown_error = teardown_task.exception()
+                if teardown_error is None:
                     torn_down = True
-                    break
-                except asyncio.CancelledError:
-                    continue  # Ctrl-C during teardown: retry once, then give up
-                except EnvironmentDriverError as exc:
-                    draft.failures.append(_failure_record(exc))
-                    break
+                elif isinstance(teardown_error, EnvironmentDriverError):
+                    draft.failures.append(_failure_record(teardown_error))
+                else:
+                    draft.failures.append(
+                        FailureRecord(
+                            attribution=FailureAttribution.RUNNER_ERROR,
+                            code=FailureCode.RUNNER_INTERNAL_ERROR,
+                            message=(
+                                f"Unexpected teardown error: "
+                                f"{type(teardown_error).__name__}: {teardown_error}"
+                            ),
+                        )
+                    )
             if torn_down:
                 recorder.emit("environment.teardown.completed", source="compose_environment")
             else:
@@ -684,6 +838,8 @@ async def _execute_compose(
                     "Environment teardown did not complete; manual cleanup required for "
                     f"compose project {teardown_handle.project_name}"
                 )
+            if cancelled_mid_teardown:
+                raise asyncio.CancelledError  # preserve the user's cancellation state
 
 
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
@@ -742,6 +898,7 @@ def run_case(
     agent_identity = AgentIdentity(
         adapter=loaded.case.agent.adapter,
         entrypoint=entrypoint,
+        entrypoint_override=agent_override,
         code=code_identity(entrypoint, import_root) if entrypoint is not None else None,
         provider=tools_spec.provider if tools_spec is not None else None,
         provider_code=(
@@ -811,7 +968,7 @@ def run_case(
                 loaded.environment, loaded.environment_path.parent
             )
             assert entrypoint is not None
-            asyncio.run(
+            _run_loop(
                 _execute_compose(
                     session,
                     loaded,
@@ -826,12 +983,14 @@ def run_case(
             )
     except KeyboardInterrupt:
         terminal_state = RunState.CANCELLED
-        draft.failures.append(
+        # the cancellation is the root cause of anything that followed (P2-2)
+        draft.failures.insert(
+            0,
             FailureRecord(
                 attribution=FailureAttribution.RUNNER_ERROR,
                 code=FailureCode.RUN_CANCELLED,
                 message="Run cancelled by user",
-            )
+            ),
         )
         session.transition(RunState.CANCELLED)
         recorder.emit("run.cancelled", source="orchestrator")

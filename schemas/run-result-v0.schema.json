@@ -81,6 +81,18 @@
           "title": "Path",
           "type": "string"
         },
+        "relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Path"
+        },
         "version": {
           "title": "Version",
           "type": "string"

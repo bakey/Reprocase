@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import jsonschema
@@ -48,18 +48,29 @@ class ToolBroker:
         max_calls: int,
         tool_timeout_seconds: float,
         recorder: EventRecorder,
+        redact_keys: Iterable[str] = (),
     ) -> None:
         self.registry = registry
         self.allow = frozenset(allow)
         self.remaining = max_calls
         self.tool_timeout_seconds = tool_timeout_seconds
         self.recorder = recorder
+        self.redact_keys = tuple(redact_keys)
         self.calls_made = 0
         self.budget_exceeded = False
+        self.closed = False
+
+    def close(self) -> None:
+        """Reject all further calls (agent phase is over or being torn down)."""
+
+        self.closed = True
 
     @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(name for name in self.registry.names if name in self.allow)
+
+    def _redact(self, value: Any) -> Any:
+        return redact(value, extra_keys=self.redact_keys)
 
     def _reject(self, error: ToolCallError) -> ToolCallError:
         self.recorder.emit(
@@ -75,6 +86,14 @@ class ToolBroker:
         return error
 
     def _check_allowed(self, name: str) -> Tool:
+        if self.closed:
+            raise self._reject(
+                ToolCallError(
+                    f"Tool broker is closed; late call to {name!r} rejected",
+                    code=FailureCode.TOOL_NOT_ALLOWED,
+                    tool=name,
+                )
+            )
         tool = self.registry.get(name)
         if tool is None or name not in self.allow:
             raise self._reject(
@@ -134,7 +153,7 @@ class ToolBroker:
 
         sequence_payload = {
             "tool": name,
-            "arguments": redact(dict(arguments)),
+            "arguments": self._redact(dict(arguments)),
             "remaining_calls": self.remaining,
         }
         self.recorder.emit("tool.call.started", source="tool_broker", payload=sequence_payload)
@@ -192,7 +211,7 @@ class ToolBroker:
             payload={
                 "tool": name,
                 "duration_ms": max(0, (time.monotonic_ns() - started) // 1_000_000),
-                "result": redact(result),
+                "result": self._redact(result),
             },
         )
         return result

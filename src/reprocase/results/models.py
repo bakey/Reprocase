@@ -60,6 +60,7 @@ class CaseIdentity(StrictOutputModel):
     version: str
     digest: str
     path: str
+    relative_path: str | None = None
 
 
 class SourceIdentity(StrictOutputModel):
@@ -79,6 +80,7 @@ class CodeIdentity(StrictOutputModel):
 class AgentIdentity(StrictOutputModel):
     adapter: str
     entrypoint: str | None = None
+    entrypoint_override: str | None = None
     code: CodeIdentity | None = None
     provider: str | None = None
     provider_code: CodeIdentity | None = None

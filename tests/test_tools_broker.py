@@ -195,3 +195,42 @@ def test_cancelled_error_passes_through(tmp_path: Path) -> None:
 
     with pytest.raises(asyncio.CancelledError):
         _run(broker.call("order.get", {}))
+
+
+def test_broker_uses_custom_redact_keys(tmp_path: Path) -> None:
+    tool = StubTool(result={"session_secret": "raw", "ok": 1})
+    recorder = EventRecorder(tmp_path / "events.jsonl", "run_test")
+    broker = ToolBroker(
+        ToolRegistry([tool]),
+        allow=("order.get",),
+        max_calls=5,
+        tool_timeout_seconds=1.0,
+        recorder=recorder,
+        redact_keys=("session_secret",),
+    )
+
+    _run(broker.call("order.get", {"session_secret": "raw", "order_id": "O1"}))
+
+    events = _events(tmp_path)
+    started = next(e for e in events if e["type"] == "tool.call.started")
+    completed = next(e for e in events if e["type"] == "tool.call.completed")
+    assert started["payload"]["arguments"]["session_secret"] == "[REDACTED]"
+    assert started["payload"]["arguments"]["order_id"] == "O1"
+    assert completed["payload"]["result"]["session_secret"] == "[REDACTED]"
+    # the real invocation saw the unredacted values
+    assert tool.calls[0]["session_secret"] == "raw"
+
+
+def test_closed_broker_rejects_late_calls(tmp_path: Path) -> None:
+    tool = StubTool()
+    broker = _broker(tmp_path, tool)
+    broker.close()
+
+    with pytest.raises(ToolCallError) as excinfo:
+        _run(broker.call("order.get", {}))
+
+    assert excinfo.value.code == FailureCode.TOOL_NOT_ALLOWED
+    assert "closed" in excinfo.value.message
+    assert tool.calls == []
+    rejected = [e for e in _events(tmp_path) if e["type"] == "tool.call.rejected"]
+    assert rejected[-1]["payload"]["tool"] == "order.get"

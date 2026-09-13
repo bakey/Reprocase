@@ -201,3 +201,32 @@ def test_runner_package_lazy_run_case() -> None:
     import reprocase.runner as runner_package
 
     assert callable(runner_package.run_case)
+
+
+def test_build_rerun_command_variants() -> None:
+    from reprocase.results.report import build_rerun_command
+
+    result = {
+        "case": {
+            "path": "refund-agent.yaml",
+            "relative_path": "examples/support-world/refund-agent.yaml",
+        }
+    }
+    assert (
+        build_rerun_command(None, result)
+        == "reprocase run examples/support-world/refund-agent.yaml"
+    )
+
+    with_override = {"agent": {"entrypoint_override": "agents.wrong:run"}, "seed": 0}
+    assert build_rerun_command(with_override, result).endswith("--agent agents.wrong:run")
+
+    with_seed = {"agent": {}, "seed": 173}
+    assert build_rerun_command(with_seed, result).endswith("--seed 173")
+
+    spaced = {"case": {"path": "case.yaml", "relative_path": "my cases/refund case.yaml"}}
+    command = build_rerun_command({"agent": {}, "seed": 0}, spaced)
+    assert "'my cases/refund case.yaml'" in command
+
+    # filename-only fallback for legacy run directories
+    legacy = {"case": {"path": "refund.yaml"}}
+    assert build_rerun_command(None, legacy) == "reprocase run refund.yaml"

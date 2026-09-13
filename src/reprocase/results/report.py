@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -219,9 +220,28 @@ def _artifacts_section(result: dict[str, Any]) -> str:
     return _table(["Path", "Media type", "Bytes", "sha256 (prefix)"], rows)
 
 
-def _rerun_section(result: dict[str, Any]) -> str:
-    case = result.get("case", {})
-    command = f"reprocase run {case.get('path')}"
+def build_rerun_command(manifest: dict[str, Any] | None, result: dict[str, Any]) -> str:
+    """A command that re-runs the same execution (P2-4).
+
+    Uses the cwd-relative case path recorded at run time, plus ``--agent``
+    and ``--seed`` only when they differ from the YAML defaults.
+    """
+
+    case = result.get("case") or {}
+    case_path = case.get("relative_path") or case.get("path") or "<case.yaml>"
+    parts = ["reprocase", "run", shlex.quote(str(case_path))]
+    agent = (manifest or {}).get("agent") or {}
+    override = agent.get("entrypoint_override")
+    if override:
+        parts += ["--agent", shlex.quote(str(override))]
+    seed = (manifest or {}).get("seed") or 0
+    if seed:
+        parts += ["--seed", str(seed)]
+    return " ".join(parts)
+
+
+def _rerun_section(manifest: dict[str, Any] | None, result: dict[str, Any]) -> str:
+    command = build_rerun_command(manifest, result)
     return (
         f"<p>Reproducibility level: <strong>{_esc(result.get('reproducibility_level'))}"
         "</strong></p>"
@@ -254,7 +274,7 @@ def render_report(run_dir: Path) -> str:
         ("Timeline", _timeline_section(events)),
         ("Warnings", _warnings_section(result)),
         ("Artifacts", _artifacts_section(result)),
-        ("Reproduction", _rerun_section(result)),
+        ("Reproduction", _rerun_section(manifest, result)),
     ]
     body = "".join(f"<h2>{_esc(name)}</h2>{content}" for name, content in sections)
     return (
