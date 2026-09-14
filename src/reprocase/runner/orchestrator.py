@@ -17,6 +17,7 @@ from typing import Any
 
 from reprocase.agents.protocol import AgentContext
 from reprocase.agents.python_adapter import PythonAgentAdapter
+from reprocase.asyncutil import observe_completion
 from reprocase.case.loader import LoadedCase, load_case
 from reprocase.case.models import (
     ComposeEnvironmentDefinition,
@@ -68,6 +69,7 @@ from reprocase.tools.validation import validate_tools
 from reprocase.vcs import git_identity
 
 CANCELLATION_GRACE_SECONDS = 5.0
+INFLIGHT_DRAIN_SECONDS = 10.0
 TEARDOWN_WAIT_SECONDS = 60.0
 TEARDOWN_CANCEL_GRACE_SECONDS = 30.0
 SHUTDOWN_DRAIN_SECONDS = 90.0
@@ -132,6 +134,23 @@ def _failure_record(error: ReprocaseError) -> FailureRecord:
         message=error.message,
         details=error.details,
     )
+
+
+def _record_cancellation(draft: _RunDraft) -> None:
+    """Record RUN_CANCELLED once, in true lifecycle order (P2-A).
+
+    Called at the point the runner first observes the user's cancellation;
+    failures that predate it keep their primary position.
+    """
+
+    if not any(failure.code == FailureCode.RUN_CANCELLED for failure in draft.failures):
+        draft.failures.append(
+            FailureRecord(
+                attribution=FailureAttribution.RUNNER_ERROR,
+                code=FailureCode.RUN_CANCELLED,
+                message="Run cancelled by user",
+            )
+        )
 
 
 def _case_identity(loaded: LoadedCase) -> CaseIdentity:
@@ -299,27 +318,6 @@ def _execute_fake(
         if environment is not None:
             environment.teardown()
             recorder.emit("environment.teardown.completed", source="fake_environment")
-
-
-async def _observe_completion(task: asyncio.Task[None], timeout: float) -> None:
-    """Wait for ``task`` to finish, up to ``timeout`` seconds.
-
-    Never raises the task's own exception and never forwards cancellation to
-    the task itself: callers inspect the task afterwards for the outcome.
-    """
-
-    loop = asyncio.get_running_loop()
-    waiter: asyncio.Future[None] = loop.create_future()
-
-    def _complete(_task: asyncio.Task[None]) -> None:
-        if not waiter.done():
-            waiter.set_result(None)
-
-    task.add_done_callback(_complete)
-    try:
-        await asyncio.wait_for(asyncio.shield(waiter), timeout)
-    except TimeoutError:
-        return
 
 
 async def _run_scripted_agent(
@@ -577,6 +575,24 @@ async def _run_python_agent(
             if not agent_task.done():
                 agent_task.cancel()
                 await asyncio.wait({agent_task}, timeout=CANCELLATION_GRACE_SECONDS)
+            # in-flight tool operations (e.g. to_thread I/O) must confirm
+            # completion BEFORE the final state is captured (P1-B); an
+            # exhausted drain means the state may still be changing, so the
+            # evidence is flagged incomplete instead of trusted
+            if not await broker.wait_inflight(INFLIGHT_DRAIN_SECONDS):
+                warning = (
+                    f"Tool operations did not confirm completion within "
+                    f"{INFLIGHT_DRAIN_SECONDS:.0f}s; final-state evidence may be incomplete"
+                )
+                draft.warnings.append(warning)
+                draft.failures.append(
+                    FailureRecord(
+                        attribution=FailureAttribution.RUNNER_ERROR,
+                        code=FailureCode.RUNNER_EVIDENCE_INCOMPLETE,
+                        message=warning,
+                        details={"in_flight": broker.inflight},
+                    )
+                )
 
         if broker.budget_exceeded and not any(
             failure.code == FailureCode.AGENT_BUDGET_EXCEEDED for failure in draft.failures
@@ -765,81 +781,94 @@ async def _execute_compose(
                 env_file=driver.env_file,
                 work_dir=driver.work_dir,
             )
-        if teardown_handle is not None:
-            # best-effort log collection FIRST, while containers still exist
-            # (P2-3); a fallback handle suffices because compose logs only
-            # needs the project name and env file
-            try:
-                log_paths = await driver.collect_logs(teardown_handle)
-                if driver.log_truncated:
+        try:
+            # best-effort log collection, while containers still exist (P2-3);
+            # a fallback handle suffices because compose logs only needs the
+            # project name and env file
+            if teardown_handle is not None:
+                try:
+                    log_paths = await driver.collect_logs(teardown_handle)
+                    if driver.log_truncated:
+                        draft.warnings.append(
+                            "Environment logs exceeded 10 MiB and were truncated to the tail"
+                        )
+                    for log_path in log_paths:
+                        content = log_path.read_bytes()
+                        relative = log_path.relative_to(storage.run_dir).as_posix()
+                        draft.artifacts.append(
+                            ArtifactRef(
+                                media_type="text/plain",
+                                path=relative,
+                                size_bytes=len(content),
+                                sha256=hashlib.sha256(content).hexdigest(),
+                            )
+                        )
+                    recorder.emit(
+                        "environment.logs.collected",
+                        source="compose_environment",
+                        payload={"count": len(log_paths)},
+                    )
+                except asyncio.CancelledError:
                     draft.warnings.append(
-                        "Environment logs exceeded 10 MiB and were truncated to the tail"
+                        "Environment log collection was interrupted by cancellation"
                     )
-                for log_path in log_paths:
-                    content = log_path.read_bytes()
-                    relative = log_path.relative_to(storage.run_dir).as_posix()
-                    draft.artifacts.append(
-                        ArtifactRef(
-                            media_type="text/plain",
-                            path=relative,
-                            size_bytes=len(content),
-                            sha256=hashlib.sha256(content).hexdigest(),
+                    raise
+                except Exception as log_error:  # diagnostics only; never masks the real failure
+                    draft.warnings.append(
+                        f"Could not collect environment logs: "
+                        f"{type(log_error).__name__}: {log_error}"
+                    )
+        finally:
+            # teardown lives in its own finally (P1-A): it runs no matter how
+            # the body, grading, or log collection exits — including mid-
+            # collection cancellation.
+            if teardown_handle is not None:
+                # a single teardown task with bounded waits (P2-1):
+                # cancellation re-waits on the SAME task — never two
+                # concurrent `compose down`s. The waits only observe
+                # completion; they neither re-raise the task's error nor
+                # forward cancellation to it.
+                teardown_task = asyncio.create_task(driver.teardown(teardown_handle))
+                cancelled_mid_teardown = False
+                try:
+                    await observe_completion(teardown_task, TEARDOWN_WAIT_SECONDS)
+                except asyncio.CancelledError:
+                    cancelled_mid_teardown = True
+                    _record_cancellation(draft)
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await observe_completion(teardown_task, TEARDOWN_CANCEL_GRACE_SECONDS)
+                torn_down = False
+                if teardown_task.done() and not teardown_task.cancelled():
+                    teardown_error = teardown_task.exception()
+                    if teardown_error is None:
+                        torn_down = True
+                    elif isinstance(teardown_error, EnvironmentDriverError):
+                        draft.failures.append(_failure_record(teardown_error))
+                    else:
+                        draft.failures.append(
+                            FailureRecord(
+                                attribution=FailureAttribution.RUNNER_ERROR,
+                                code=FailureCode.RUNNER_INTERNAL_ERROR,
+                                message=(
+                                    f"Unexpected teardown error: "
+                                    f"{type(teardown_error).__name__}: {teardown_error}"
+                                ),
+                            )
                         )
-                    )
-                recorder.emit(
-                    "environment.logs.collected",
-                    source="compose_environment",
-                    payload={"count": len(log_paths)},
-                )
-            except Exception as log_error:  # diagnostics only; never masks the real failure
-                draft.warnings.append(
-                    f"Could not collect environment logs: {type(log_error).__name__}: {log_error}"
-                )
-
-            # a single teardown task with bounded waits (P2-1): cancellation
-            # re-waits on the SAME task — never two concurrent `compose down`s.
-            # The waits only observe completion; they neither re-raise the
-            # task's error nor forward cancellation to it.
-            teardown_task = asyncio.create_task(driver.teardown(teardown_handle))
-            cancelled_mid_teardown = False
-            try:
-                await _observe_completion(teardown_task, TEARDOWN_WAIT_SECONDS)
-            except asyncio.CancelledError:
-                cancelled_mid_teardown = True
-                with contextlib.suppress(asyncio.CancelledError):
-                    await _observe_completion(teardown_task, TEARDOWN_CANCEL_GRACE_SECONDS)
-            torn_down = False
-            if teardown_task.done() and not teardown_task.cancelled():
-                teardown_error = teardown_task.exception()
-                if teardown_error is None:
-                    torn_down = True
-                elif isinstance(teardown_error, EnvironmentDriverError):
-                    draft.failures.append(_failure_record(teardown_error))
+                if torn_down:
+                    recorder.emit("environment.teardown.completed", source="compose_environment")
                 else:
-                    draft.failures.append(
-                        FailureRecord(
-                            attribution=FailureAttribution.RUNNER_ERROR,
-                            code=FailureCode.RUNNER_INTERNAL_ERROR,
-                            message=(
-                                f"Unexpected teardown error: "
-                                f"{type(teardown_error).__name__}: {teardown_error}"
-                            ),
-                        )
+                    draft.cleanup_required = True
+                    draft.cleanup_command = (
+                        f"docker compose -p {teardown_handle.project_name} "
+                        "down --volumes --remove-orphans"
                     )
-            if torn_down:
-                recorder.emit("environment.teardown.completed", source="compose_environment")
-            else:
-                draft.cleanup_required = True
-                draft.cleanup_command = (
-                    f"docker compose -p {teardown_handle.project_name} "
-                    "down --volumes --remove-orphans"
-                )
-                draft.warnings.append(
-                    "Environment teardown did not complete; manual cleanup required for "
-                    f"compose project {teardown_handle.project_name}"
-                )
-            if cancelled_mid_teardown:
-                raise asyncio.CancelledError  # preserve the user's cancellation state
+                    draft.warnings.append(
+                        "Environment teardown did not complete; manual cleanup required for "
+                        f"compose project {teardown_handle.project_name}"
+                    )
+                if cancelled_mid_teardown:
+                    raise asyncio.CancelledError  # preserve the user's cancellation state
 
 
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
@@ -983,15 +1012,11 @@ def run_case(
             )
     except KeyboardInterrupt:
         terminal_state = RunState.CANCELLED
-        # the cancellation is the root cause of anything that followed (P2-2)
-        draft.failures.insert(
-            0,
-            FailureRecord(
-                attribution=FailureAttribution.RUNNER_ERROR,
-                code=FailureCode.RUN_CANCELLED,
-                message="Run cancelled by user",
-            ),
-        )
+        # land the cancellation in lifecycle order (P2-A): an earlier agent or
+        # environment failure keeps its primary position; when nothing failed
+        # before the cancel, RUN_CANCELLED is the primary (and any cleanup
+        # failure already recorded after the cancel stays secondary)
+        _record_cancellation(draft)
         session.transition(RunState.CANCELLED)
         recorder.emit("run.cancelled", source="orchestrator")
     except ReprocaseError as error:

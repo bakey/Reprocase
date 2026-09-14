@@ -153,6 +153,7 @@
         "RUNNER_INVALID_TRANSITION",
         "RUNNER_STORAGE_ERROR",
         "RUNNER_INTERNAL_ERROR",
+        "RUNNER_EVIDENCE_INCOMPLETE",
         "RUN_CANCELLED"
       ],
       "title": "FailureCode",

@@ -10,6 +10,7 @@ from typing import Any
 
 import jsonschema
 
+from reprocase.asyncutil import observe_completion
 from reprocase.errors import FailureAttribution, FailureCode, ReprocaseError
 from reprocase.recording.events import EventRecorder
 from reprocase.tools.protocol import Tool
@@ -59,11 +60,35 @@ class ToolBroker:
         self.calls_made = 0
         self.budget_exceeded = False
         self.closed = False
+        self._inflight: set[asyncio.Task[Any]] = set()
 
     def close(self) -> None:
         """Reject all further calls (agent phase is over or being torn down)."""
 
         self.closed = True
+
+    @property
+    def inflight(self) -> int:
+        return len(self._inflight)
+
+    async def wait_inflight(self, timeout_seconds: float) -> bool:
+        """Bounded wait for in-flight invocations to finish (P1-B).
+
+        Threads cannot be killed: this gives in-progress operations bounded
+        time to complete — it never force-stops them. Returns False when
+        operations remain unconfirmed after the deadline.
+        """
+
+        deadline = time.monotonic() + timeout_seconds
+        for task in list(self._inflight):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if await observe_completion(task, remaining):
+                self._inflight.discard(task)
+                if not task.cancelled():
+                    task.exception()  # retrieve, avoiding "never retrieved" warnings
+        return not self._inflight
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -158,10 +183,18 @@ class ToolBroker:
         }
         self.recorder.emit("tool.call.started", source="tool_broker", payload=sequence_payload)
         started = time.monotonic_ns()
+        # Each invocation runs as a tracked task (P1-B). The broker only
+        # observes completion: a per-tool timeout or a cancellation of this
+        # call never cancels the operation itself (a to_thread invocation
+        # keeps running in its thread), so the runner can later confirm
+        # whether the side effect actually landed.
+        invoke_task = asyncio.create_task(tool.invoke(arguments))
+        self._inflight.add(invoke_task)
         try:
-            result = await asyncio.wait_for(
-                tool.invoke(arguments), timeout=self.tool_timeout_seconds
-            )
+            finished = await observe_completion(invoke_task, self.tool_timeout_seconds)
+            if not finished:
+                raise TimeoutError(f"tool invoke exceeded {self.tool_timeout_seconds}s")
+            result = invoke_task.result()
         except TimeoutError as exc:
             error = ToolCallError(
                 f"Tool {name!r} timed out after {self.tool_timeout_seconds}s",
@@ -193,6 +226,9 @@ class ToolBroker:
             )
             self._emit_failed(error, started)
             raise error from exc
+        finally:
+            if invoke_task.done():
+                self._inflight.discard(invoke_task)
 
         try:
             json.dumps(result)
