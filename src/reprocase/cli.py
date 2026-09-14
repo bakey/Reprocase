@@ -10,9 +10,11 @@ from typing import Annotated
 import typer
 
 from reprocase.case.loader import load_case
+from reprocase.doctor import run_doctor
 from reprocase.environments.check import load_compose_target, run_environment_check
 from reprocase.errors import CaseValidationError, EnvironmentDriverError, ReprocaseError
 from reprocase.results.models import GraderStatus, RunStatus, Verdict
+from reprocase.results.report import write_html_report
 from reprocase.runner.orchestrator import run_case
 
 app = typer.Typer(
@@ -114,13 +116,68 @@ def run_command(
             typer.secho(f"{graded.status} {graded.grader_id}", fg=color)
         if result.primary_failure is not None:
             typer.echo(f"Failure: [{result.primary_failure.code}] {result.primary_failure.message}")
+        if result.cleanup_required:
+            typer.secho(
+                "INFRASTRUCTURE WARNING: environment teardown did not complete.\n"
+                f"Manual cleanup: {result.cleanup_command}",
+                fg=typer.colors.YELLOW,
+            )
 
+    if result.cleanup_required:
+        raise typer.Exit(code=3)
     if result.verdict == Verdict.FAIL:
         raise typer.Exit(code=1)
     if result.status == RunStatus.CANCELLED:
         raise typer.Exit(code=4)
     if result.verdict == Verdict.INVALID:
         raise typer.Exit(code=3)
+
+
+@app.command("report")
+def report_command(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(exists=True, file_okay=False, readable=True, resolve_path=True),
+    ],
+) -> None:
+    """Regenerate the static HTML report for an existing run directory."""
+
+    try:
+        target = write_html_report(run_dir)
+    except (OSError, ValueError) as error:
+        typer.secho(
+            f"ERROR could not build report for {run_dir}: {error}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+    typer.echo(f"Report: {target}")
+
+
+@app.command()
+def doctor() -> None:
+    """Check local dependencies and report stale reprocase compose projects."""
+
+    checks, stale = run_doctor()
+    failed = False
+    for check in checks:
+        if check.ok:
+            typer.secho(f"OK   {check.name}: {check.detail}", fg=typer.colors.GREEN)
+        else:
+            typer.secho(f"FAIL {check.name}: {check.detail}", fg=typer.colors.RED)
+            failed = True
+    if stale:
+        typer.secho(
+            "\nStale reprocase compose projects found (not removed automatically):",
+            fg=typer.colors.YELLOW,
+        )
+        for project in stale:
+            typer.echo(f"  {project}")
+            typer.echo(f"    cleanup: docker compose -p {project} down --volumes --remove-orphans")
+    else:
+        typer.echo("No stale reprocase compose projects.")
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("env-check")

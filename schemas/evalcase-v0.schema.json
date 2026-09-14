@@ -287,6 +287,9 @@
     "OutputSpec": {
       "additionalProperties": false,
       "properties": {
+        "redaction": {
+          "$ref": "#/$defs/RedactionSpec"
+        },
         "retain_environment_on_failure": {
           "default": false,
           "title": "Retain Environment On Failure",
@@ -294,6 +297,27 @@
         }
       },
       "title": "OutputSpec",
+      "type": "object"
+    },
+    "RedactionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "keys": {
+          "default": [
+            "authorization",
+            "api_key",
+            "password",
+            "token",
+            "cookie"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        }
+      },
+      "title": "RedactionSpec",
       "type": "object"
     },
     "StateAssertionGraderSpec": {

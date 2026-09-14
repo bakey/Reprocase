@@ -20,6 +20,7 @@ class ArtifactStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.write_bytes(content)
+            target.chmod(0o600)  # owner-only, per section 17.1
         ref = ArtifactRef(
             media_type=media_type,
             path=relative.as_posix(),

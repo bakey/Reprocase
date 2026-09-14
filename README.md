@@ -165,7 +165,7 @@ testable increment.
 | M1 — Reproducible environment | Docker Compose lifecycle, safety precheck, dynamic ports, reset, state digests, cleanup | **Complete** |
 | M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | **Complete** |
 | M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | **Complete** |
-| M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | Planned |
+| M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | **Complete** |
 | M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | Planned |
 
 Beyond Phase 1, the roadmap includes enterprise workflow eval packs, multi-trial statistics,
@@ -238,6 +238,16 @@ uv run reprocase run examples/support-world/refund-agent.yaml --agent agents.wro
 ```
 
 The evidence bundle now also contains `tool.call.*` events and a structured `usage` block.
+
+### M4: evidence and resilience
+
+Every run writes a static `report.html` alongside `result.json` and `events.jsonl`; regenerate it
+from any run directory, and check the local environment plus stale compose projects:
+
+```bash
+uv run reprocase report .reprocase/runs/<run_id>
+uv run reprocase doctor
+```
 
 Current CLI exit codes:
 
