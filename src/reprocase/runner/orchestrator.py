@@ -746,6 +746,12 @@ async def _execute_compose(
         )
         _record_grader_failures(draft)
         draft.artifacts.extend(artifacts.created)
+    except asyncio.CancelledError:
+        # record the cancel BEFORE entering cleanup (P2-B): a teardown
+        # failure raised from the finally below must stay secondary to the
+        # user's cancellation, never preempt it as primary
+        _record_cancellation(draft)
+        raise
     except ReprocaseError as exc:
         # lifecycle failures are recorded BEFORE any cleanup failure so the
         # earliest conclusion-blocking error stays primary (§16.2, P2-2)
@@ -809,6 +815,9 @@ async def _execute_compose(
                         payload={"count": len(log_paths)},
                     )
                 except asyncio.CancelledError:
+                    # record before teardown runs (P2-B), so a later teardown
+                    # failure lands after the cancellation in lifecycle order
+                    _record_cancellation(draft)
                     draft.warnings.append(
                         "Environment log collection was interrupted by cancellation"
                     )
