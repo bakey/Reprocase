@@ -65,7 +65,12 @@ def _write_agent(tmp_path: Path, name: str, source: str) -> str:
 
 
 def _events_text(run_dir: Path) -> str:
-    return (run_dir / "events.jsonl").read_text(encoding="utf-8")
+    events_file = run_dir / "events.jsonl"
+    # The run directory is created before the first event is written; pollers
+    # must tolerate the gap (CI hit FileNotFoundError here).
+    if not events_file.exists():
+        return ""
+    return events_file.read_text(encoding="utf-8")
 
 
 def test_immortal_agent_still_persists_result(tmp_path: Path) -> None:
