@@ -623,3 +623,113 @@ def test_agent_failure_keeps_primary_over_later_cancel(
     codes = [failure.code for failure in result.secondary_failures]
     assert codes[-2:] == [FailureCode.RUN_CANCELLED, FailureCode.ENV_TEARDOWN_FAILED]
     assert _residual_resources() == []
+
+
+def test_sigint_during_execution_stays_primary_over_teardown_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2-B: a cancel observed mid-execution is recorded before cleanup, so a
+    failing teardown lands secondary instead of preempting RUN_CANCELLED."""
+
+    real_teardown = ComposeEnvironmentDriver.teardown
+
+    async def failing_teardown(self: ComposeEnvironmentDriver, handle: EnvironmentHandle) -> None:
+        await real_teardown(self, handle)  # actually clean up; simulate the failure after
+        raise EnvironmentDriverError(
+            "simulated teardown failure",
+            code=FailureCode.ENV_TEARDOWN_FAILED,
+            details={"compose_project": handle.project_name},
+        )
+
+    monkeypatch.setattr(ComposeEnvironmentDriver, "teardown", failing_teardown)
+    entrypoint = _write_agent(
+        tmp_path,
+        "agent_sleeps_until_cancelled",
+        """\
+import asyncio
+
+
+async def run(task, tools, context):
+    await asyncio.sleep(300)
+    return {"message": "unreachable"}
+""",
+    )
+
+    def mutate(environment: dict, case: dict) -> None:
+        case["agent"]["entrypoint"] = entrypoint
+        case["budgets"]["wall_time_seconds"] = 300
+
+    output = tmp_path / "runs"
+
+    def interrupt_when_agent_started() -> None:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            candidates = (
+                [path for path in output.iterdir() if path.is_dir()] if output.exists() else []
+            )
+            if candidates and '"agent.started"' in _events_text(candidates[0]):
+                time.sleep(1.0)  # land squarely inside the agent's sleep
+                os.kill(os.getpid(), signal.SIGINT)
+                return
+            time.sleep(0.2)
+
+    watcher = threading.Thread(target=interrupt_when_agent_started, daemon=True)
+    watcher.start()
+    result = run_case(_variant_case(tmp_path, mutate), output)
+    watcher.join(timeout=10)
+
+    assert result.status == RunStatus.CANCELLED
+    assert result.primary_failure is not None
+    assert result.primary_failure.code == FailureCode.RUN_CANCELLED
+    codes = [failure.code for failure in result.secondary_failures]
+    assert codes == [FailureCode.ENV_TEARDOWN_FAILED]
+    assert result.cleanup_required is True
+    assert result.cleanup_command is not None
+    assert _residual_resources() == []
+
+
+def test_sigint_during_log_collection_stays_primary_over_teardown_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2-B: a cancel observed in log collection is recorded before teardown,
+    so a failing teardown lands secondary instead of preempting RUN_CANCELLED."""
+
+    real_collect = ComposeEnvironmentDriver.collect_logs
+    real_teardown = ComposeEnvironmentDriver.teardown
+    logs_entered = threading.Event()
+
+    async def slow_collect(self: ComposeEnvironmentDriver, handle: EnvironmentHandle) -> list[Path]:
+        logs_entered.set()
+        await asyncio.sleep(30)  # the SIGINT lands here
+        return await real_collect(self, handle)
+
+    async def failing_teardown(self: ComposeEnvironmentDriver, handle: EnvironmentHandle) -> None:
+        await real_teardown(self, handle)  # actually clean up; simulate the failure after
+        raise EnvironmentDriverError(
+            "simulated teardown failure",
+            code=FailureCode.ENV_TEARDOWN_FAILED,
+            details={"compose_project": handle.project_name},
+        )
+
+    monkeypatch.setattr(ComposeEnvironmentDriver, "collect_logs", slow_collect)
+    monkeypatch.setattr(ComposeEnvironmentDriver, "teardown", failing_teardown)
+
+    output = tmp_path / "runs"
+
+    def interrupt_when_collecting() -> None:
+        if logs_entered.wait(timeout=120):
+            os.kill(os.getpid(), signal.SIGINT)
+
+    watcher = threading.Thread(target=interrupt_when_collecting, daemon=True)
+    watcher.start()
+    result = run_case(REFUND_CASE, output)
+    watcher.join(timeout=10)
+
+    assert result.status == RunStatus.CANCELLED
+    assert result.primary_failure is not None
+    assert result.primary_failure.code == FailureCode.RUN_CANCELLED
+    codes = [failure.code for failure in result.secondary_failures]
+    assert codes == [FailureCode.ENV_TEARDOWN_FAILED]
+    assert result.cleanup_required is True
+    assert any("log collection was interrupted" in warning for warning in result.warnings)
+    assert _residual_resources() == []
