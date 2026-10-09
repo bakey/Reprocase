@@ -166,18 +166,20 @@ testable increment.
 | M2 — Deterministic evaluation loop | Scripted actor, before/after snapshots, state diff, deterministic graders | **Complete** |
 | M3 — Real agent execution | Python agent adapter, controlled Tool Broker, budgets, tool-call evidence | **Complete** |
 | M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | **Complete** |
-| M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | Planned |
+| M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | **Complete** |
 
-Beyond Phase 1, the roadmap includes enterprise workflow eval packs, multi-trial statistics,
-perturbation testing, regression gates, dependency recording and replay, trajectory branching, and a
-production trace-to-EvalCase workflow.
+Phase 1 is complete and released as `0.1.0-alpha.1`. Beyond Phase 1, the roadmap includes
+enterprise workflow eval packs, multi-trial statistics, perturbation testing, regression gates,
+dependency recording and replay, trajectory branching, and a production trace-to-EvalCase
+workflow.
 
-## Quickstart for the current M0
+## Quickstart
 
 ### Requirements
 
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/) (recommended)
+- Docker with Compose (for the real environments; the fake examples run without it)
 
 Install the development environment and run a deterministic example:
 
@@ -249,6 +251,40 @@ uv run reprocase report .reprocase/runs/<run_id>
 uv run reprocase doctor
 ```
 
+### M5: the eval pack — three cases, correct/wrong/timeout agents
+
+The standard refund, executed by a Python agent through the Tool Broker:
+
+```bash
+uv run reprocase run examples/support-world/refund-agent.yaml                          # correct -> PASS
+uv run reprocase run examples/support-world/refund-agent.yaml --agent agents.wrong_refund_agent:run   # -> FAIL
+```
+
+A high-amount refund that requires policy approval — the correct agent requests
+approval first; bypassing it or over-drawing is rejected by the environment and
+fails the graders:
+
+```bash
+uv run reprocase run examples/support-world/refund-approval.yaml                       # correct -> PASS
+uv run reprocase run examples/support-world/refund-approval.yaml --agent agents.approval_bypass_agent:run   # -> FAIL
+uv run reprocase run examples/support-world/refund-approval.yaml --agent agents.approval_overdraw_agent:run # -> FAIL
+```
+
+A deliberately slow report dependency — the resilient agent catches the
+structured `TOOL_TIMEOUT` and falls back to notifying the customer (still a
+PASS); the fragile agent lets it escape (FAIL); a hanging agent hits the
+wall-time budget (FAIL with `AGENT_TIMEOUT` and preserved evidence):
+
+```bash
+uv run reprocase run examples/support-world/tool-timeout.yaml                          # resilient -> PASS
+uv run reprocase run examples/support-world/tool-timeout.yaml --agent agents.fragile_agent:run        # -> FAIL
+uv run reprocase run examples/support-world/refund-agent.yaml --agent agents.hang_agent:run           # -> FAIL (timeout)
+```
+
+See [docs/authoring.md](docs/authoring.md) for how to write your own cases,
+environments, agents, and graders, and [docs/demo-script.md](docs/demo-script.md)
+for a five-minute guided walkthrough.
+
 Current CLI exit codes:
 
 | Code | Meaning |
@@ -259,30 +295,56 @@ Current CLI exit codes:
 | 3 | Environment, grader, or runner error; verdict is INVALID |
 | 4 | User cancellation |
 
+## Known limitations (Phase 1)
+
+- **Agents are trusted host code.** The Tool Broker mediates the tools it is
+  given, but nothing stops malicious agent code from bypassing it; strong
+  isolation (separate agent runtime) is a later milestone. Run only cases and
+  agents from repositories you trust.
+- **Cancellation is cooperative.** An agent that never awaits or swallows
+  `CancelledError` cannot be force-killed in-process; the runner bounds the
+  damage, flags it, and preserves the result, but the process may outlive the
+  run briefly.
+- **Reproducibility is R1**, not bit-for-bit: equivalent initial environment
+  and reruns, but cloud-model outputs are not deterministic. Dependency
+  replay (R2) and trajectory branching (R3) are future work.
+- **One case per process invocation.** Cases whose agent/tool code shares
+  top-level package names must run sequentially (`reprocase run` executes a
+  single case).
+- **No multi-trial statistics, LLM judges, or framework adapters yet** —
+  OpenAI Agents SDK / LangGraph / HTTP adapters, trials, and perturbations
+  are Phase 2 scope.
+- **Approval workflows in the example world are auto-adjudicated** by a
+  deterministic policy engine; human-in-the-loop approval arrives with later
+  milestones.
+
 ## Repository layout
 
 ```text
 src/reprocase/     Python package, contracts, runner, recording, graders, and fake adapters
 schemas/           Exported JSON Schemas for public contracts
 examples/fake/     Deterministic M0 examples
-examples/support-world/  Compose environment, refund EvalCase, scripted actors, grader modules
+examples/support-world/  Compose environment, three EvalCases, agents, grader modules
 tests/             Contract, runner, recording, schema, environment, grader, and CLI tests
-docs/              Milestone-specific design notes
+docs/              Milestone notes, authoring guide, and demo script
 ```
 
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run pytest
-uv run ruff check .
+uv run pytest                                # docker tests skip without a daemon
+uv run pytest -m "docker and slow"           # full acceptance incl. 20x env restore
+uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run python scripts/export_schemas.py --check
 ```
 
-Reprocase is at the beginning of its development. Issues, design feedback, integrations, eval cases,
-and real-world failure examples are welcome—especially from teams already operating agents against
-stateful tools or business workflows.
+Releases are tagged `v*.*.*`; the [Release workflow](.github/workflows/release.yml)
+runs the full check suite, builds the sdist/wheel, and attaches them to a
+GitHub release. Reprocase is young — issues, design feedback, integrations,
+eval cases, and real-world failure examples are welcome, especially from teams
+already operating agents against stateful tools or business workflows.
 
 ## License
 

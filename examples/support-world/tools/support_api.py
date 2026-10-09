@@ -80,7 +80,10 @@ def create_tools(environment: Any) -> list[HttpTool]:
         HttpTool(
             base_url,
             name="refund.create",
-            description="Create a refund for an order.",
+            description=(
+                "Create a refund for an order. Amounts above 500 additionally require "
+                "an approved approval request (pass its id as approval_id)."
+            ),
             method="POST",
             path_template="/refunds",
             input_schema={
@@ -88,8 +91,42 @@ def create_tools(environment: Any) -> list[HttpTool]:
                 "properties": {
                     "order_id": {"type": "string"},
                     "amount": {"type": "number"},
+                    "approval_id": {"type": "string"},
                 },
                 "required": ["order_id", "amount"],
+                "additionalProperties": False,
+            },
+        ),
+        HttpTool(
+            base_url,
+            name="approval.request",
+            description=(
+                "Request approval for a high-amount refund. The policy engine "
+                "adjudicates the request when it is created; poll approval.get."
+            ),
+            method="POST",
+            path_template="/approvals",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                "required": ["order_id", "amount", "reason"],
+                "additionalProperties": False,
+            },
+        ),
+        HttpTool(
+            base_url,
+            name="approval.get",
+            description="Fetch one approval request by id.",
+            method="GET",
+            path_template="/approvals/{approval_id}",
+            input_schema={
+                "type": "object",
+                "properties": {"approval_id": {"type": "string"}},
+                "required": ["approval_id"],
                 "additionalProperties": False,
             },
         ),
@@ -106,6 +143,19 @@ def create_tools(environment: Any) -> list[HttpTool]:
                     "template": {"type": "string"},
                 },
                 "required": ["customer_id", "template"],
+                "additionalProperties": False,
+            },
+        ),
+        HttpTool(
+            base_url,
+            name="report.generate",
+            description="Generate a billing report for an order (slow, often unavailable).",
+            method="POST",
+            path_template="/reports",
+            input_schema={
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}},
+                "required": ["order_id"],
                 "additionalProperties": False,
             },
         ),
