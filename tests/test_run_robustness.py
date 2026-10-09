@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 from conftest import SUPPORT_WORLD_DIR, requires_docker
+from signal_helpers import interrupt_next_loop_turn
 
 from reprocase.environments.compose import ComposeEnvironmentDriver
 from reprocase.environments.protocol import EnvironmentHandle
@@ -284,7 +285,9 @@ def test_agent_self_cancellation_is_agent_failure(tmp_path: Path, agent_source: 
     assert _residual_resources() == []
 
 
-def test_sigint_during_teardown_runs_cleanup_once(tmp_path: Path, monkeypatch) -> None:
+def test_sigint_during_teardown_runs_cleanup_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """P2-1/P2-2: one teardown task; cancellation waits on it, never duplicates it."""
 
     real_teardown = ComposeEnvironmentDriver.teardown
@@ -295,9 +298,7 @@ def test_sigint_during_teardown_runs_cleanup_once(tmp_path: Path, monkeypatch) -
     ) -> None:
         nonlocal calls
         calls += 1
-        import asyncio
-
-        await asyncio.sleep(6)  # wide window for the SIGINT to land inside
+        await interrupt_next_loop_turn()
         await real_teardown(self, handle)
         raise EnvironmentDriverError(
             "simulated teardown failure",
@@ -309,27 +310,14 @@ def test_sigint_during_teardown_runs_cleanup_once(tmp_path: Path, monkeypatch) -
 
     output = tmp_path / "runs"
 
-    def interrupt_when_grading() -> None:
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            candidates = (
-                [path for path in output.iterdir() if path.is_dir()] if output.exists() else []
-            )
-            if candidates and '"GRADING"' in _events_text(candidates[0]):
-                time.sleep(1.0)  # land inside the slow teardown
-                os.kill(os.getpid(), signal.SIGINT)
-                return
-            time.sleep(0.2)
-
-    watcher = threading.Thread(target=interrupt_when_grading, daemon=True)
-    watcher.start()
     result = run_case(REFUND_CASE, output)
-    watcher.join(timeout=10)
 
     assert calls == 1, f"teardown ran {calls} times (concurrent compose downs)"
-    assert result.status == RunStatus.CANCELLED
+    diagnostic = result.model_dump_json(indent=2)
+    assert result.graders, diagnostic  # distinguish setup failures from cancellation failures
+    assert result.status == RunStatus.CANCELLED, diagnostic
     assert result.primary_failure is not None
-    assert result.primary_failure.code == FailureCode.RUN_CANCELLED
+    assert result.primary_failure.code == FailureCode.RUN_CANCELLED, diagnostic
     teardown_failures = [
         failure
         for failure in result.secondary_failures
@@ -577,9 +565,7 @@ def test_agent_failure_keeps_primary_over_later_cancel(
     async def slow_failing_teardown(
         self: ComposeEnvironmentDriver, handle: EnvironmentHandle
     ) -> None:
-        import asyncio as _asyncio
-
-        await _asyncio.sleep(6)
+        await interrupt_next_loop_turn()
         await real_teardown(self, handle)
         raise EnvironmentDriverError(
             "simulated teardown failure",
@@ -599,26 +585,13 @@ def test_agent_failure_keeps_primary_over_later_cancel(
 
     output = tmp_path / "runs"
 
-    def interrupt_when_grading() -> None:
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            candidates = (
-                [path for path in output.iterdir() if path.is_dir()] if output.exists() else []
-            )
-            if candidates and '"GRADING"' in _events_text(candidates[0]):
-                time.sleep(1.0)  # land inside the slow teardown
-                os.kill(os.getpid(), signal.SIGINT)
-                return
-            time.sleep(0.2)
-
-    watcher = threading.Thread(target=interrupt_when_grading, daemon=True)
-    watcher.start()
     result = run_case(_variant_case(tmp_path, mutate), output)
-    watcher.join(timeout=10)
 
-    assert result.status == RunStatus.CANCELLED
+    diagnostic = result.model_dump_json(indent=2)
+    assert result.graders, diagnostic
+    assert result.status == RunStatus.CANCELLED, diagnostic
     assert result.primary_failure is not None
-    assert result.primary_failure.code == FailureCode.AGENT_EXCEPTION
+    assert result.primary_failure.code == FailureCode.AGENT_EXCEPTION, diagnostic
     assert result.primary_failure.attribution == FailureAttribution.AGENT_FAILURE
     codes = [failure.code for failure in result.secondary_failures]
     assert codes[-2:] == [FailureCode.RUN_CANCELLED, FailureCode.ENV_TEARDOWN_FAILED]
