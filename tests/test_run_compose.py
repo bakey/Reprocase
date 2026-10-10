@@ -125,7 +125,10 @@ def test_unapproved_refund_actor_fails_policy_grader(tmp_path: Path) -> None:
     policy = _grader(result, "policy-tests")
     assert policy.status == GraderStatus.FAIL
     assert policy.grader_type == "test_command"
-    assert "999" in json.dumps(policy.actual)
+    # Since the M5 policy upgrade the environment rejects over-amount refunds
+    # outright (HTTP 422), so no refund record is ever created — the policy
+    # grader fails on the missing refund rather than on a recorded "999".
+    assert policy.actual == {"completed_refunds": [], "matching_emails": []}
     assert policy.expected["amount"] == 49.9
     assert any(str(evidence).startswith("artifact:") for evidence in policy.evidence)
 
