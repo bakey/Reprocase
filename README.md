@@ -2,7 +2,7 @@
 
 **Turn every agent failure into a reproducible eval.**
 
-[![CI](https://github.com/PhotonDance/Reprocase/actions/workflows/ci.yml/badge.svg)](https://github.com/PhotonDance/Reprocase/actions/workflows/ci.yml)
+[![CI](https://github.com/bakey/Reprocase/actions/workflows/ci.yml/badge.svg)](https://github.com/bakey/Reprocase/actions/workflows/ci.yml)
 
 Reprocase is open-source reproducible execution and evaluation infrastructure for AI agents. It
 turns an agent task into a versioned, portable **EvalCase** that binds together the task,
