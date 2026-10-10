@@ -14,7 +14,9 @@ from conftest import SUPPORT_WORLD_ENV, requires_docker
 
 from reprocase.environments.check import load_compose_target, run_environment_check
 
-GOLDEN_DIGEST = "sha256:5189f4f2dd66c9edf848040762f2492c2569a99f6dcccec3bf9511e2f868c753"
+# Digest of the M5 fixture (ORD-3003 + approvals collection); the M1-era value
+# sha256:5189f4f2... is recorded in docs/m1.md as a historical observation.
+GOLDEN_DIGEST = "sha256:2e6366790224708234acdc38aa8576c688286e965a58d0617db22fc67738095a"
 
 pytestmark = [requires_docker, pytest.mark.docker, pytest.mark.slow]
 

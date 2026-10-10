@@ -34,9 +34,17 @@
       "status": "paid",
       "refundable_amount": 120.0,
       "refund_status": "none"
+    },
+    "ORD-3003": {
+      "id": "ORD-3003",
+      "customer_id": "CUST-2002",
+      "status": "paid",
+      "refundable_amount": 850.0,
+      "refund_status": "none"
     }
   },
   "refunds": {},
+  "approvals": {},
   "emails": [],
   "audit_log": [
     {

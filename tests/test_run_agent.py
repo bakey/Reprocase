@@ -16,7 +16,7 @@ from reprocase.results.models import RunResult, RunStatus, Verdict
 from reprocase.runner.orchestrator import run_case
 
 AGENT_CASE = SUPPORT_WORLD_DIR / "refund-agent.yaml"
-GOLDEN_INITIAL_DIGEST = "sha256:5189f4f2dd66c9edf848040762f2492c2569a99f6dcccec3bf9511e2f868c753"
+GOLDEN_INITIAL_DIGEST = "sha256:2e6366790224708234acdc38aa8576c688286e965a58d0617db22fc67738095a"
 
 pytestmark = [requires_docker, pytest.mark.docker]
 
