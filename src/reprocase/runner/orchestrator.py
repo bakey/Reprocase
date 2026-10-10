@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import signal
 import sys
 import time
 from collections.abc import Coroutine
@@ -84,32 +85,69 @@ def _run_loop(coro: Coroutine[Any, Any, None]) -> None:
     indefinitely. Here the shutdown is bounded: the main coroutine gets a
     generous drain window (its cleanup has internal timeouts), everything
     else gets a courtesy second, and the loop closes regardless.
+
+    SIGINT is routed through the loop's wakeup descriptor
+    (``add_signal_handler``): the kernel may deliver the signal to any
+    background thread (subprocess reapers, ``to_thread`` workers), and a
+    pending ``KeyboardInterrupt`` raised there would never interrupt the main
+    thread's idle ``kevent``/``select`` wait — the run would hang with no
+    timer to wake it. Cancelling the main task from the loop callback keeps
+    the KeyboardInterrupt semantics (recorded as RUN_CANCELLED, re-raised to
+    the caller) independent of which thread received the signal.
     """
 
     loop = asyncio.new_event_loop()
     interrupt: BaseException | None = None
+    signalled = False
     main = loop.create_task(coro)
+
+    def _on_sigint() -> None:
+        nonlocal signalled
+        signalled = True
+        if not main.done():
+            main.cancel()
+
+    handler_installed = True
     try:
-        loop.run_until_complete(main)
-    except KeyboardInterrupt as exc:
-        interrupt = exc
-    if not main.done():
-        # cancel ONLY the main coroutine: its own cleanup owns the shutdown
-        # order (close broker -> cancel agent -> collect logs -> teardown)
-        main.cancel()
-        loop.run_until_complete(asyncio.wait({main}, timeout=SHUTDOWN_DRAIN_SECONDS))
-    # anything still pending at this point is an orphan the flow already
-    # abandoned; it gets a courtesy second, never a blocking wait (P1-1)
-    stragglers = [task for task in asyncio.all_tasks(loop) if not task.done()]
-    for task in stragglers:
-        task.cancel()
-    if stragglers:
-        loop.run_until_complete(asyncio.wait(stragglers, timeout=STRAGGLER_DRAIN_SECONDS))
-    if main.done() and not main.cancelled():
-        main.exception()  # retrieve, avoiding "never retrieved" warnings
-    loop.close()
-    if interrupt is not None:
-        raise interrupt
+        loop.add_signal_handler(signal.SIGINT, _on_sigint)
+    except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover - non-Unix
+        handler_installed = False
+    try:
+        try:
+            loop.run_until_complete(main)
+        except KeyboardInterrupt as exc:
+            interrupt = exc
+        except asyncio.CancelledError:
+            # the SIGINT handler cancelled the main task; the flow already
+            # recorded RUN_CANCELLED and ran its teardown. Synthesize the
+            # KeyboardInterrupt the caller expects (CLI exit 4, CANCELLED).
+            if not signalled:
+                raise  # a cancellation we did not initiate is never swallowed
+            interrupt = KeyboardInterrupt()
+        if signalled and interrupt is None:
+            # the flow completed despite the signal (it swallowed the
+            # cancellation): still report a user cancellation to the caller
+            interrupt = KeyboardInterrupt()
+        if not main.done():
+            # cancel ONLY the main coroutine: its own cleanup owns the shutdown
+            # order (close broker -> cancel agent -> collect logs -> teardown)
+            main.cancel()
+            loop.run_until_complete(asyncio.wait({main}, timeout=SHUTDOWN_DRAIN_SECONDS))
+        # anything still pending at this point is an orphan the flow already
+        # abandoned; it gets a courtesy second, never a blocking wait (P1-1)
+        stragglers = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in stragglers:
+            task.cancel()
+        if stragglers:
+            loop.run_until_complete(asyncio.wait(stragglers, timeout=STRAGGLER_DRAIN_SECONDS))
+        if main.done() and not main.cancelled():
+            main.exception()  # retrieve, avoiding "never retrieved" warnings
+        loop.close()
+        if interrupt is not None:
+            raise interrupt
+    finally:
+        if handler_installed:
+            loop.remove_signal_handler(signal.SIGINT)
 
 
 class _RunDraft:
