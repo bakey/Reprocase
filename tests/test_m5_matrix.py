@@ -90,6 +90,7 @@ def _assert_tool_evidence(run_dir: Path) -> None:
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
     assert '"tool.call.started"' in events
 
+
 # --- correct agents: three stable PASS -------------------------------------
 
 

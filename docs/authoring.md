@@ -147,7 +147,7 @@ A Python agent is an async `module:function` entrypoint with the shape:
 async def run(task, tools, context):
     order = await tools.call("order.get", {"order_id": "ORD-1001"})
     ...
-    return {"message": "done"}     # any JSON-serialisable output
+    return {"message": "done"}  # any JSON-serialisable output
 ```
 
 - `task` is `task.input` from the case; `context` carries `run_id`, `seed`,
