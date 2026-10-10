@@ -1,0 +1,69 @@
+{
+  "metadata": {
+    "schema_version": "support-world/v1",
+    "generated_at": null
+  },
+  "runtime": {
+    "request_ids": []
+  },
+  "customers": {
+    "CUST-1001": {
+      "id": "CUST-1001",
+      "name": "Ada Example",
+      "locale": "zh-CN",
+      "tier": "standard"
+    },
+    "CUST-2002": {
+      "id": "CUST-2002",
+      "name": "Ben Sample",
+      "locale": "en-US",
+      "tier": "premium"
+    },
+    "CUST-3003": {
+      "id": "CUST-3003",
+      "name": "Cara Variant",
+      "locale": "zh-CN",
+      "tier": "standard"
+    }
+  },
+  "orders": {
+    "ORD-1001": {
+      "id": "ORD-1001",
+      "customer_id": "CUST-1001",
+      "status": "paid",
+      "refundable_amount": 49.9,
+      "refund_status": "none"
+    },
+    "ORD-2002": {
+      "id": "ORD-2002",
+      "customer_id": "CUST-2002",
+      "status": "paid",
+      "refundable_amount": 120.0,
+      "refund_status": "none"
+    },
+    "ORD-3003": {
+      "id": "ORD-3003",
+      "customer_id": "CUST-2002",
+      "status": "paid",
+      "refundable_amount": 850.0,
+      "refund_status": "none"
+    },
+    "ORD-4004": {
+      "id": "ORD-4004",
+      "customer_id": "CUST-3003",
+      "status": "paid",
+      "refundable_amount": 65.0,
+      "refund_status": "none"
+    }
+  },
+  "refunds": {},
+  "approvals": {},
+  "emails": [],
+  "audit_log": [
+    {
+      "sequence": 1,
+      "event": "fixture_loaded",
+      "entity_id": "support-world/v1"
+    }
+  ]
+}

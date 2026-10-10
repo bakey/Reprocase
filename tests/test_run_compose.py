@@ -178,6 +178,7 @@ def test_grader_error_makes_run_invalid(tmp_path: Path) -> None:
 def test_environment_failure_makes_run_invalid(tmp_path: Path) -> None:
     def mutate(environment: dict, case: dict) -> None:
         environment["restore"]["command"] = ["python", "-c", "import sys; sys.exit(3)"]
+        environment["restore"].pop("fixture_default", None)
 
     result = run_case(_write_variant_case(tmp_path, mutate), tmp_path / "runs")
 

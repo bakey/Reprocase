@@ -104,7 +104,8 @@ compose:
 restore:                           # deterministic reset command: the heart of R1
   strategy: command
   service: api
-  command: ["python", "-m", "app.reset", "/fixtures/refund.json"]
+  command: ["python", "-m", "app.reset", "${FIXTURE}"]
+  fixture_default: /fixtures/refund.json   # used when a case declares no fixture
 
 healthcheck:
   type: http
@@ -138,6 +139,32 @@ Design rules that keep restores reproducible:
 5. Volumes are deleted on teardown; nothing leaks between runs.
 
 Use `reprocase env-check environment.yaml --cycles 20` to prove stability.
+
+### Sharing one environment across many cases (`${FIXTURE}`)
+
+When the restore command contains a `${FIXTURE}` placeholder, each EvalCase can
+select its own initial state while sharing the same environment definition:
+
+```yaml
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+  fixture: /fixtures/overdue-refund.json   # container-side path; overrides
+                                           # restore.fixture_default
+```
+
+Resolution and validation rules:
+
+- The case-level `environment.fixture` wins over `restore.fixture_default`;
+  with no placeholder in the command, neither field may be set (a fixture that
+  silently does nothing is an authoring error and fails `validate`).
+- The fixture value is substituted as a plain argv element — no shell is ever
+  involved — so it is typically a path inside the image or a mounted volume.
+- A different fixture produces a different initial state digest **and** a
+  different EvalCase digest, so evidence stays attributable.
+
+`reprocase env-check` also accepts `--fixture` to check a specific variant:
+`reprocase env-check environment.yaml --fixture /fixtures/other.json --cycles 20`.
 
 ## Writing an agent
 

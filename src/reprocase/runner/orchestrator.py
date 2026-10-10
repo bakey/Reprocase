@@ -674,6 +674,7 @@ async def _execute_compose(
         slug=loaded.case.metadata.id,
         run_suffix=run_id[-10:],
         work_root=storage.run_dir / "environment",
+        fixture=loaded.fixture,
     )
     handle: EnvironmentHandle | None = None
     prepared = False
@@ -697,7 +698,11 @@ async def _execute_compose(
 
         session.transition(RunState.RESTORING_ENVIRONMENT)
         await driver.restore(handle)
-        recorder.emit("environment.restored", source="compose_environment")
+        recorder.emit(
+            "environment.restored",
+            source="compose_environment",
+            payload={"fixture": driver.fixture},
+        )
 
         session.transition(RunState.HEALTHCHECKING)
         health = await driver.healthcheck(handle)

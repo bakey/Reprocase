@@ -198,11 +198,18 @@ def env_check_command(
         bool,
         typer.Option("--allow-unsafe", help="Skip the Compose safety precheck."),
     ] = False,
+    fixture: Annotated[
+        str | None,
+        typer.Option(
+            "--fixture",
+            help="Override the ${FIXTURE} restore value (container-side path).",
+        ),
+    ] = None,
 ) -> None:
     """Internal diagnostic: run the environment lifecycle and print state digests."""
 
     try:
-        definition, compose_file, slug = load_compose_target(target)
+        resolved = load_compose_target(target)
     except CaseValidationError as error:
         _print_error(error)
         raise typer.Exit(code=2) from error
@@ -210,17 +217,16 @@ def env_check_command(
     try:
         report = asyncio.run(
             run_environment_check(
-                definition,
-                compose_file,
+                resolved,
                 cycles=cycles,
-                slug=slug,
                 work_root=work_root,
                 allow_unsafe=allow_unsafe,
+                fixture_override=fixture,
             )
         )
-    except EnvironmentDriverError as error:
+    except (EnvironmentDriverError, CaseValidationError) as error:
         _print_error(error)
-        raise typer.Exit(code=3) from error
+        raise typer.Exit(code=3 if isinstance(error, EnvironmentDriverError) else 2) from error
 
     for cycle in report.cycles:
         seconds = cycle.duration_ms / 1000

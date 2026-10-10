@@ -344,6 +344,7 @@ def test_lifecycle_failure_stays_primary_over_teardown_failure(tmp_path: Path, m
 
     def mutate(environment: dict, case: dict) -> None:
         environment["restore"]["command"] = ["python", "-c", "import sys; sys.exit(3)"]
+        environment["restore"].pop("fixture_default", None)
         case["tools"]["provider"] = "ghost_provider:create_tools"  # would also fail, later
 
     output = tmp_path / "runs"
