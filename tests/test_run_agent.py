@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SUPPORT_WORLD_DIR, requires_docker
+from conftest import SUPPORT_WORLD_DIR, requires_docker, residual_resources
 
 from reprocase.errors import FailureAttribution, FailureCode
 from reprocase.results.models import RunResult, RunStatus, Verdict
@@ -19,20 +18,6 @@ AGENT_CASE = SUPPORT_WORLD_DIR / "refund-agent.yaml"
 GOLDEN_INITIAL_DIGEST = "sha256:2e6366790224708234acdc38aa8576c688286e965a58d0617db22fc67738095a"
 
 pytestmark = [requires_docker, pytest.mark.docker]
-
-
-def _residual_resources() -> list[str]:
-    leftovers: list[str] = []
-    commands = {
-        "container": ["docker", "ps", "-a", "--filter", "name=reprocase", "-q"],
-        "network": ["docker", "network", "ls", "--filter", "name=reprocase", "-q"],
-        "volume": ["docker", "volume", "ls", "--filter", "name=reprocase", "-q"],
-    }
-    for resource, argv in commands.items():
-        output = subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()
-        if output:
-            leftovers.append(f"{resource}: {output}")
-    return leftovers
 
 
 def _events(result: RunResult, output_root: Path) -> list[dict[str, object]]:
@@ -95,7 +80,7 @@ def test_correct_python_agent_passes(tmp_path: Path) -> None:
     assert manifest["agent"]["provider_code"]["path"] == "tools/support_api.py"
     assert len(manifest["agent"]["provider_code"]["sha256"]) == 64
     assert manifest["source"]["git_commit"] is None or len(manifest["source"]["git_commit"]) == 40
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_wrong_python_agent_fails(tmp_path: Path) -> None:
@@ -111,7 +96,7 @@ def test_wrong_python_agent_fails(tmp_path: Path) -> None:
     manifest = json.loads((output / result.run_id / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["agent"]["entrypoint"] == "agents.wrong_refund_agent:run"
     assert manifest["agent"]["code"]["path"] == "agents/wrong_refund_agent.py"
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_unauthorized_tool_is_rejected_with_event(tmp_path: Path) -> None:
@@ -152,7 +137,7 @@ async def run(task, tools, context):
     assert result.agent_output == {"message": "blocked", "code": "TOOL_NOT_ALLOWED"}
     # the refund went through but the notification did not: a valid FAIL
     assert result.verdict == Verdict.FAIL
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_invalid_arguments_never_reach_the_environment(tmp_path: Path) -> None:
@@ -186,7 +171,7 @@ async def run(task, tools, context):
     assert final.content_digest == GOLDEN_INITIAL_DIGEST
     assert final.content_digest == initial.content_digest
     assert result.verdict == Verdict.FAIL
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_tool_call_budget_exceeded_is_agent_attributed(tmp_path: Path) -> None:
@@ -220,7 +205,7 @@ async def run(task, tools, context):
     assert result.primary_failure.code == FailureCode.AGENT_BUDGET_EXCEEDED
     rejected = [e for e in _events(result, output) if e["type"] == "tool.call.rejected"]
     assert rejected[0]["payload"]["code"] == FailureCode.AGENT_BUDGET_EXCEEDED
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_wall_time_timeout_is_agent_attributed(tmp_path: Path) -> None:
@@ -254,7 +239,7 @@ async def run(task, tools, context):
     # final state is still captured after the timeout (best-effort evidence)
     assert len(result.states) == 2
     assert result.duration_ms < 60_000
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_agent_raising_timeout_error_is_not_wall_time(tmp_path: Path) -> None:
@@ -283,7 +268,7 @@ async def run(task, tools, context):
     events = _events(result, output)
     assert not any(e["type"] == "agent.timed_out" for e in events)
     assert any(e["type"] == "agent.failed" for e in events)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_invalid_tool_schema_makes_run_invalid(tmp_path: Path) -> None:
@@ -317,7 +302,7 @@ def create_tools(environment):
     assert result.primary_failure is not None
     assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
     assert result.primary_failure.code == FailureCode.CASE_SCHEMA_INVALID
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_allowlist_referencing_unknown_tool_makes_run_invalid(tmp_path: Path) -> None:
@@ -332,7 +317,7 @@ def test_allowlist_referencing_unknown_tool_makes_run_invalid(tmp_path: Path) ->
     assert result.verdict == Verdict.INVALID
     assert result.primary_failure is not None
     assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_agent_completed_event_is_redacted(tmp_path: Path) -> None:
@@ -370,7 +355,7 @@ async def run(task, tools, context):
     assert result.agent_output["credentials"]["api_key"] == "[REDACTED]"
     raw_result = (output / result.run_id / "result.json").read_text(encoding="utf-8")
     assert "topsecret-value" not in raw_result
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_lazy_importing_agent_passes_end_to_end(tmp_path: Path) -> None:
@@ -381,7 +366,7 @@ def test_lazy_importing_agent_passes_end_to_end(tmp_path: Path) -> None:
 
     assert result.verdict == Verdict.PASS
     assert result.agent_output == {"message": "退款 RF-9001 已完成"}
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_two_cases_same_package_run_sequentially(tmp_path: Path) -> None:
@@ -396,7 +381,7 @@ def test_two_cases_same_package_run_sequentially(tmp_path: Path) -> None:
 
     assert first.verdict == Verdict.PASS
     assert second.verdict == Verdict.PASS
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sync_invoke_tool_makes_run_invalid(tmp_path: Path) -> None:
@@ -430,7 +415,7 @@ def create_tools(environment):
     assert result.primary_failure is not None
     assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
     assert result.primary_failure.code == FailureCode.CASE_SCHEMA_INVALID
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_infra_error_from_tool_keeps_attribution(tmp_path: Path) -> None:
@@ -484,4 +469,4 @@ async def run(task, tools, context):
     assert result.primary_failure.code == FailureCode.ENV_STATE_CAPTURE_FAILED
     failed = [e for e in _events(result, output) if e["type"] == "tool.call.failed"]
     assert failed[-1]["payload"]["code"] == FailureCode.ENV_STATE_CAPTURE_FAILED
-    assert _residual_resources() == []
+    assert residual_resources() == []

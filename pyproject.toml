@@ -31,7 +31,9 @@ dev = [
   "mypy>=1.13,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
-  "ruff>=0.9,<1",
+  # Pinned minor: lint rule sets shift between ruff minors and a new release
+  # once broke CI on unchanged code (SIM102 at 0.17.x).
+  "ruff>=0.16.7,<0.17",
   "types-jsonschema>=4.23,<5",
   "types-PyYAML>=6.0,<7",
 ]

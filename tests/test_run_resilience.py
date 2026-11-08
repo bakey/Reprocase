@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SUPPORT_WORLD_DIR, requires_docker
+from conftest import SUPPORT_WORLD_DIR, requires_docker, residual_resources
 from typer.testing import CliRunner
 
 from reprocase.cli import app
@@ -25,20 +25,6 @@ from reprocase.runner.orchestrator import run_case
 AGENT_CASE = SUPPORT_WORLD_DIR / "refund-agent.yaml"
 
 pytestmark = [requires_docker, pytest.mark.docker]
-
-
-def _residual_resources() -> list[str]:
-    leftovers: list[str] = []
-    commands = {
-        "container": ["docker", "ps", "-a", "--filter", "name=reprocase", "-q"],
-        "network": ["docker", "network", "ls", "--filter", "name=reprocase", "-q"],
-        "volume": ["docker", "volume", "ls", "--filter", "name=reprocase", "-q"],
-    }
-    for resource, argv in commands.items():
-        output = subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()
-        if output:
-            leftovers.append(f"{resource}: {output}")
-    return leftovers
 
 
 def _variant_case(tmp_path: Path, mutate) -> Path:
@@ -106,7 +92,7 @@ async def run(task, tools, context):
     cli = CliRunner().invoke(app, ["report", str(output / result.run_id)])
     assert cli.exit_code == 0
     assert result.duration_ms < 60_000
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_agent_ignoring_cancellation_gets_warning(tmp_path: Path) -> None:
@@ -142,7 +128,7 @@ async def run(task, tools, context):
     assert any("ignored cancellation" in warning for warning in result.warnings)
     # grace period was enforced; the run did not wait for the orphaned sleep
     assert elapsed < 45
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_missing_final_state_is_invalid_not_fail(tmp_path: Path) -> None:
@@ -173,7 +159,7 @@ def test_missing_final_state_is_invalid_not_fail(tmp_path: Path) -> None:
     # the in-container policy grader still ran and saw the correct refund
     assert by_id["policy-tests"].status == GraderStatus.PASS
     assert not any(grader.status == GraderStatus.FAIL for grader in result.graders)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_teardown_failure_does_not_mask_agent_failure(
@@ -217,7 +203,7 @@ def test_teardown_failure_does_not_mask_agent_failure(
     )
     assert cli.exit_code == 3
     assert "INFRASTRUCTURE WARNING" in cli.output
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_ctrl_c_leaves_diagnosable_run(tmp_path: Path) -> None:
@@ -276,7 +262,7 @@ async def run(task, tools, context):
     if result["cleanup_required"]:
         assert result["cleanup_command"]
         assert "reprocase_" in result["cleanup_command"]
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_doctor_reports_environment() -> None:

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from conftest import SUPPORT_WORLD_DIR, SUPPORT_WORLD_ENV, requires_docker
+from conftest import SUPPORT_WORLD_DIR, SUPPORT_WORLD_ENV, requires_docker, residual_resources
 from typer.testing import CliRunner
 
 from reprocase.cli import app
@@ -19,20 +18,6 @@ from reprocase.errors import CaseValidationError, FailureCode
 GOLDEN_DIGEST = "sha256:2e6366790224708234acdc38aa8576c688286e965a58d0617db22fc67738095a"
 
 pytestmark = [requires_docker, pytest.mark.docker]
-
-
-def _residual_resources() -> list[str]:
-    leftovers: list[str] = []
-    commands = {
-        "container": ["docker", "ps", "-a", "--filter", "name=reprocase", "-q"],
-        "network": ["docker", "network", "ls", "--filter", "name=reprocase", "-q"],
-        "volume": ["docker", "volume", "ls", "--filter", "name=reprocase", "-q"],
-    }
-    for resource, argv in commands.items():
-        output = subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()
-        if output:
-            leftovers.append(f"{resource}: {output}")
-    return leftovers
 
 
 def _write_variant(tmp_path: Path, mutate: Any) -> Path:
@@ -60,7 +45,7 @@ def test_single_cycle_digest_and_cleanup(tmp_path: Path) -> None:
 
     assert not report.failures
     assert report.digests == (GOLDEN_DIGEST,)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_fixture_default_keeps_canonical_digest(tmp_path: Path) -> None:
@@ -112,7 +97,7 @@ def test_restore_failure_is_classified(tmp_path: Path) -> None:
 
     assert len(report.failures) == 1
     assert report.failures[0].failure_code == FailureCode.ENV_RESTORE_FAILED
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_healthcheck_timeout_is_classified(tmp_path: Path) -> None:
@@ -124,7 +109,7 @@ def test_healthcheck_timeout_is_classified(tmp_path: Path) -> None:
 
     assert len(report.failures) == 1
     assert report.failures[0].failure_code == FailureCode.ENV_HEALTHCHECK_FAILED
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_invalid_state_capture_output_is_classified(tmp_path: Path) -> None:
@@ -135,7 +120,7 @@ def test_invalid_state_capture_output_is_classified(tmp_path: Path) -> None:
 
     assert len(report.failures) == 1
     assert report.failures[0].failure_code == FailureCode.ENV_STATE_INVALID
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_failing_state_capture_command_is_classified(tmp_path: Path) -> None:
@@ -146,7 +131,7 @@ def test_failing_state_capture_command_is_classified(tmp_path: Path) -> None:
 
     assert len(report.failures) == 1
     assert report.failures[0].failure_code == FailureCode.ENV_STATE_CAPTURE_FAILED
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_env_check_cli(tmp_path: Path) -> None:
@@ -166,4 +151,4 @@ def test_env_check_cli(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert GOLDEN_DIGEST in result.output
     assert "OK 1/1 identical digests" in result.output
-    assert _residual_resources() == []
+    assert residual_resources() == []

@@ -1,0 +1,13 @@
+# Acme Support World compose definition. Host ports are never hardcoded; the
+# runner injects them per run through a dedicated env file (see environment.yaml).
+services:
+  api:
+    build: .
+    image: reprocase-acme-world:dev
+    ports:
+      - "127.0.0.1:${API_PORT}:8000"
+    volumes:
+      - api-data:/data
+
+volumes:
+  api-data:
