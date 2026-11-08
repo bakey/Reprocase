@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SUPPORT_WORLD_DIR, requires_docker
+from conftest import SUPPORT_WORLD_DIR, requires_docker, residual_resources
 
 from reprocase.errors import FailureAttribution, FailureCode
 from reprocase.results.models import GraderResult, GraderStatus, RunResult, RunStatus, Verdict
@@ -19,20 +18,6 @@ REFUND_CASE = SUPPORT_WORLD_DIR / "refund.yaml"
 GOLDEN_INITIAL_DIGEST = "sha256:2e6366790224708234acdc38aa8576c688286e965a58d0617db22fc67738095a"
 
 pytestmark = [requires_docker, pytest.mark.docker]
-
-
-def _residual_resources() -> list[str]:
-    leftovers: list[str] = []
-    commands = {
-        "container": ["docker", "ps", "-a", "--filter", "name=reprocase", "-q"],
-        "network": ["docker", "network", "ls", "--filter", "name=reprocase", "-q"],
-        "volume": ["docker", "volume", "ls", "--filter", "name=reprocase", "-q"],
-    }
-    for resource, argv in commands.items():
-        output = subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()
-        if output:
-            leftovers.append(f"{resource}: {output}")
-    return leftovers
 
 
 def _run(tmp_path: Path, agent: str | None = None) -> RunResult:
@@ -70,7 +55,7 @@ def test_correct_actor_passes_with_complete_evidence(tmp_path: Path) -> None:
     assert (run_dir / "state.final.json").is_file()
     assert (run_dir / "state.diff.json").is_file()
     assert any(artifact.media_type == "text/plain" for artifact in result.artifacts)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_diff_shows_target_and_nontarget_changes(tmp_path: Path) -> None:
@@ -102,7 +87,7 @@ def test_wrong_order_actor_fails_with_structured_evidence(tmp_path: Path) -> Non
         assert graded.evidence, grader_id
     unchanged = _grader(result, "non-target-orders-unchanged")
     assert unchanged.actual["initial"] != unchanged.actual["final"]
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_missing_email_actor_fails_notification_grader(tmp_path: Path) -> None:
@@ -115,7 +100,7 @@ def test_missing_email_actor_fails_notification_grader(tmp_path: Path) -> None:
     assert notified.expected == 1
     assert notified.actual == 0
     assert _grader(result, "non-target-orders-unchanged").status == GraderStatus.PASS
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_unapproved_refund_actor_fails_policy_grader(tmp_path: Path) -> None:
@@ -135,7 +120,7 @@ def test_unapproved_refund_actor_fails_policy_grader(tmp_path: Path) -> None:
     failure = result.primary_failure
     assert failure is not None
     assert failure.attribution == FailureAttribution.AGENT_FAILURE
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def _write_variant_case(tmp_path: Path, mutate) -> Path:
@@ -172,7 +157,7 @@ def test_grader_error_makes_run_invalid(tmp_path: Path) -> None:
     assert graded.status == GraderStatus.ERROR
     assert result.primary_failure is not None
     assert result.primary_failure.attribution == FailureAttribution.GRADER_ERROR
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_environment_failure_makes_run_invalid(tmp_path: Path) -> None:
@@ -187,7 +172,7 @@ def test_environment_failure_makes_run_invalid(tmp_path: Path) -> None:
     assert result.primary_failure is not None
     assert result.primary_failure.attribution == FailureAttribution.ENVIRONMENT_ERROR
     assert result.primary_failure.code == FailureCode.ENV_RESTORE_FAILED
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_agent_exception_is_agent_failure(tmp_path: Path) -> None:
@@ -209,4 +194,4 @@ def test_agent_exception_is_agent_failure(tmp_path: Path) -> None:
     # partial evidence is preserved: final state was still captured and graded
     assert len(result.states) == 2
     assert _grader(result, "refund-created").status == GraderStatus.FAIL
-    assert _residual_resources() == []
+    assert residual_resources() == []

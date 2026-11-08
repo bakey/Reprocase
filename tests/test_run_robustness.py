@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import SUPPORT_WORLD_DIR, requires_docker
+from conftest import SUPPORT_WORLD_DIR, requires_docker, residual_resources
 from signal_helpers import interrupt_next_loop_turn
 
 from reprocase.environments.compose import ComposeEnvironmentDriver
@@ -29,20 +29,6 @@ AGENT_CASE = SUPPORT_WORLD_DIR / "refund-agent.yaml"
 REFUND_CASE = SUPPORT_WORLD_DIR / "refund.yaml"
 
 pytestmark = [requires_docker, pytest.mark.docker]
-
-
-def _residual_resources() -> list[str]:
-    leftovers: list[str] = []
-    commands = {
-        "container": ["docker", "ps", "-a", "--filter", "name=reprocase", "-q"],
-        "network": ["docker", "network", "ls", "--filter", "name=reprocase", "-q"],
-        "volume": ["docker", "volume", "ls", "--filter", "name=reprocase", "-q"],
-    }
-    for resource, argv in commands.items():
-        output = subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()
-        if output:
-            leftovers.append(f"{resource}: {output}")
-    return leftovers
 
 
 def _variant_case(tmp_path: Path, mutate, base: Path = AGENT_CASE) -> Path:
@@ -125,7 +111,7 @@ async def run(task, tools, context):
     assert result["primary_failure"]["code"] == "AGENT_TIMEOUT"
     assert result["primary_failure"]["details"]["ignored_cancellation"] is True
     assert any("ignored cancellation" in warning for warning in result["warnings"])
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_custom_redaction_keys_cover_events_result_and_report(tmp_path: Path) -> None:
@@ -168,7 +154,7 @@ async def run(task, tools, context):
     from reprocase.results.report import write_html_report
 
     assert "raw-secret-value" not in write_html_report(run_dir).read_text(encoding="utf-8")
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sigint_stops_agent_before_teardown(tmp_path: Path) -> None:
@@ -242,7 +228,7 @@ async def run(task, tools, context):
     # and it never became a real side effect
     assert "tool.call.completed" not in events
     assert "environment.teardown.completed" in events
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 @pytest.mark.parametrize(
@@ -282,7 +268,7 @@ def test_agent_self_cancellation_is_agent_failure(tmp_path: Path, agent_source: 
     # best-effort evidence still collected
     assert len(result.states) == 2
     assert (output / result.run_id / "result.json").is_file()
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sigint_during_teardown_runs_cleanup_once(
@@ -324,7 +310,7 @@ def test_sigint_during_teardown_runs_cleanup_once(
         if failure.code == FailureCode.ENV_TEARDOWN_FAILED
     ]
     assert len(teardown_failures) == 1
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_lifecycle_failure_stays_primary_over_teardown_failure(tmp_path: Path, monkeypatch) -> None:
@@ -356,7 +342,7 @@ def test_lifecycle_failure_stays_primary_over_teardown_failure(tmp_path: Path, m
     assert result.primary_failure.attribution == FailureAttribution.ENVIRONMENT_ERROR
     codes = [failure.code for failure in result.secondary_failures]
     assert codes == [FailureCode.ENV_TEARDOWN_FAILED]
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_logs_collected_on_lifecycle_failure_and_cancel(tmp_path: Path) -> None:
@@ -374,7 +360,7 @@ def test_logs_collected_on_lifecycle_failure_and_cancel(tmp_path: Path) -> None:
     assert result.primary_failure.code == FailureCode.ENV_HEALTHCHECK_FAILED
     log_artifacts = [a for a in result.artifacts if a.path.endswith("environment.log")]
     assert log_artifacts, "environment logs were not collected on the failure path"
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_report_rerun_command_reproduces_execution(tmp_path: Path) -> None:
@@ -404,7 +390,7 @@ def test_report_rerun_command_reproduces_execution(tmp_path: Path) -> None:
     )
     assert rerun.returncode == 1, rerun.stdout[-500:]  # same wrong agent, same FAIL
     assert "FAIL support.refund.agent" in rerun.stdout
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sigint_during_log_collection_still_tears_down(
@@ -447,7 +433,7 @@ def test_sigint_during_log_collection_still_tears_down(
     assert teardown_calls == 1, f"teardown ran {teardown_calls} times"
     assert result.cleanup_required is False
     assert any("log collection was interrupted" in warning for warning in result.warnings)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 _SLOW_PROVIDER = """\
@@ -538,7 +524,7 @@ def test_inflight_tool_effect_lands_before_final_capture(tmp_path: Path) -> None
     diff = json.loads((output / result.run_id / "state.diff.json").read_text(encoding="utf-8"))
     paths = {op["path"] for op in diff["ops"]}
     assert "/refunds/RF-9001" in paths
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_unconfirmed_inflight_effects_mark_evidence_incomplete(tmp_path: Path) -> None:
@@ -553,7 +539,7 @@ def test_unconfirmed_inflight_effects_mark_evidence_incomplete(tmp_path: Path) -
     secondary_codes = [failure.code for failure in result.secondary_failures]
     assert FailureCode.RUNNER_EVIDENCE_INCOMPLETE in secondary_codes
     assert any("did not confirm completion" in warning for warning in result.warnings)
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_agent_failure_keeps_primary_over_later_cancel(
@@ -596,7 +582,7 @@ def test_agent_failure_keeps_primary_over_later_cancel(
     assert result.primary_failure.attribution == FailureAttribution.AGENT_FAILURE
     codes = [failure.code for failure in result.secondary_failures]
     assert codes[-2:] == [FailureCode.RUN_CANCELLED, FailureCode.ENV_TEARDOWN_FAILED]
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sigint_during_execution_stays_primary_over_teardown_failure(
@@ -659,7 +645,7 @@ async def run(task, tools, context):
     assert codes == [FailureCode.ENV_TEARDOWN_FAILED]
     assert result.cleanup_required is True
     assert result.cleanup_command is not None
-    assert _residual_resources() == []
+    assert residual_resources() == []
 
 
 def test_sigint_during_log_collection_stays_primary_over_teardown_failure(
@@ -706,4 +692,4 @@ def test_sigint_during_log_collection_stays_primary_over_teardown_failure(
     assert codes == [FailureCode.ENV_TEARDOWN_FAILED]
     assert result.cleanup_required is True
     assert any("log collection was interrupted" in warning for warning in result.warnings)
-    assert _residual_resources() == []
+    assert residual_resources() == []
