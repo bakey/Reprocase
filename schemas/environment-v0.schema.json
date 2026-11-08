@@ -193,6 +193,20 @@
           "title": "Command",
           "type": "array"
         },
+        "fixture_default": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fixture Default"
+        },
         "service": {
           "maxLength": 128,
           "minLength": 1,

@@ -94,6 +94,7 @@ class EnvironmentRef(StrictModel):
     driver: Literal["fake", "docker_compose"]
     definition: Path
     compose_file: Path | None = None
+    fixture: Annotated[str, Field(min_length=1, max_length=500)] | None = None
 
 
 class BudgetSpec(StrictModel):
@@ -212,11 +213,21 @@ class ComposeSpec(StrictModel):
         return value
 
 
+FIXTURE_PLACEHOLDER = "${FIXTURE}"
+
+
 class RestoreSpec(StrictModel):
     strategy: Literal["command"] = "command"
     service: str = Field(min_length=1, max_length=128)
     command: tuple[str, ...] = Field(min_length=1)
     timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 60
+    fixture_default: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+
+    @property
+    def references_fixture(self) -> bool:
+        """Whether the command contains a ${FIXTURE} placeholder element."""
+
+        return any(FIXTURE_PLACEHOLDER in argument for argument in self.command)
 
 
 class HealthcheckSpec(StrictModel):
@@ -256,6 +267,22 @@ class ComposeEnvironmentDefinition(StrictModel):
     restore: RestoreSpec
     healthcheck: HealthcheckSpec
     state: StateSpec
+
+    @model_validator(mode="after")
+    def fixture_placeholder_only_in_restore(self) -> ComposeEnvironmentDefinition:
+        offenders: list[str] = []
+        if self.compose.file is not None and FIXTURE_PLACEHOLDER in str(self.compose.file):
+            offenders.append("compose.file")
+        if FIXTURE_PLACEHOLDER in self.healthcheck.url:
+            offenders.append("healthcheck.url")
+        if any(FIXTURE_PLACEHOLDER in argument for argument in self.state.capture.command):
+            offenders.append("state.capture.command")
+        if offenders:
+            raise ValueError(
+                f"{FIXTURE_PLACEHOLDER} is only substituted in restore.command; "
+                f"found in: {', '.join(offenders)}"
+            )
+        return self
 
 
 type EnvironmentDefinition = Annotated[

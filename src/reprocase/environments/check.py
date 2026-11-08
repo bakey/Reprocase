@@ -11,7 +11,7 @@ from uuid import uuid4
 import yaml
 from pydantic import TypeAdapter, ValidationError
 
-from reprocase.case.loader import load_case
+from reprocase.case.loader import load_case, resolve_restore_fixture
 from reprocase.case.models import ComposeEnvironmentDefinition, EnvironmentDefinition
 from reprocase.environments.compose import ComposeEnvironmentDriver, resolve_compose_file
 from reprocase.environments.protocol import EnvironmentHandle
@@ -31,6 +31,16 @@ class CycleOutcome:
     duration_ms: int
     failure_code: FailureCode | None = None
     failure_message: str | None = None
+
+
+@dataclass(frozen=True)
+class ComposeTarget:
+    """A resolved env-check target: definition, compose file, slug, fixture."""
+
+    definition: ComposeEnvironmentDefinition
+    compose_file: Path
+    slug: str
+    fixture: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,10 +65,8 @@ def _resolve_compose_file(definition: ComposeEnvironmentDefinition, base: Path) 
     return resolve_compose_file(definition, base)
 
 
-def load_compose_target(
-    path: Path | str,
-) -> tuple[ComposeEnvironmentDefinition, Path, str]:
-    """Load an environment.yaml or EvalCase and return (definition, compose file, slug)."""
+def load_compose_target(path: Path | str) -> ComposeTarget:
+    """Load an environment.yaml or EvalCase for env-check, resolving the fixture."""
 
     target = Path(path).expanduser().resolve()
     try:
@@ -77,7 +85,12 @@ def load_compose_target(
         compose_file = loaded.compose_path or _resolve_compose_file(
             loaded.environment, loaded.environment_path.parent
         )
-        return loaded.environment, compose_file, loaded.case.metadata.id
+        return ComposeTarget(
+            definition=loaded.environment,
+            compose_file=compose_file,
+            slug=loaded.case.metadata.id,
+            fixture=loaded.fixture,
+        )
 
     try:
         definition = _ENVIRONMENT_ADAPTER.validate_python(raw)
@@ -90,18 +103,40 @@ def load_compose_target(
             details={"driver": definition.driver},
         )
     compose_file = _resolve_compose_file(definition, target.parent)
-    return definition, compose_file, target.parent.name
+    return ComposeTarget(
+        definition=definition,
+        compose_file=compose_file,
+        slug=target.parent.name,
+        fixture=resolve_restore_fixture(case_fixture=None, environment=definition),
+    )
 
 
 async def run_environment_check(
-    definition: ComposeEnvironmentDefinition,
-    compose_file: Path,
+    target: ComposeTarget,
     *,
     cycles: int,
-    slug: str,
     work_root: Path,
     allow_unsafe: bool = False,
+    fixture_override: str | None = None,
 ) -> EnvCheckReport:
+    definition, compose_file, slug = target.definition, target.compose_file, target.slug
+    fixture = fixture_override if fixture_override is not None else target.fixture
+    if fixture is not None and not fixture.strip():
+        # Model fields carry min_length=1, but the CLI --fixture option and the
+        # fixture_override parameter do not; reject blanks before any container
+        # starts instead of failing the restore with a confusing empty path.
+        raise CaseValidationError(
+            "Fixture must not be empty or whitespace-only",
+            code=FailureCode.CASE_SCHEMA_INVALID,
+            details={"fixture": fixture},
+        )
+    if fixture is not None and not definition.restore.references_fixture:
+        raise CaseValidationError(
+            "A fixture was provided but the restore command contains no "
+            "${FIXTURE} placeholder to receive it",
+            code=FailureCode.CASE_SCHEMA_INVALID,
+            details={"fixture": fixture},
+        )
     outcomes: list[CycleOutcome] = []
     for cycle in range(1, cycles + 1):
         started = time.monotonic_ns()
@@ -112,6 +147,7 @@ async def run_environment_check(
             run_suffix=uuid4().hex[:8],
             work_root=work_root,
             allow_unsafe=allow_unsafe,
+            fixture=fixture,
         )
         handle = None
         prepared = False

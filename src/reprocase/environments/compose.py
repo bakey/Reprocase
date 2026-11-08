@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from reprocase.case.models import ComposeEnvironmentDefinition
+from reprocase.case.models import FIXTURE_PLACEHOLDER, ComposeEnvironmentDefinition
 from reprocase.environments.protocol import (
     CapturedState,
     CommandResult,
@@ -37,6 +37,19 @@ LOG_TAIL_LIMIT_BYTES = 10 * 1024 * 1024
 def make_project_name(prefix: str, slug: str, run_suffix: str) -> str:
     cleaned = _SLUG_CLEANUP.sub("_", slug.lower()).strip("_") or "case"
     return f"{prefix}_{cleaned[:32]}_{run_suffix}"
+
+
+def substitute_fixture(command: list[str], fixture: str | None) -> list[str]:
+    """Fill ${FIXTURE} placeholders in a restore command argv.
+
+    The loader rejects placeholder/value mismatches up front; an unset fixture
+    passes the command through untouched, and a lone placeholder element is
+    replaced wholesale (no shell is ever involved).
+    """
+
+    if fixture is None:
+        return command
+    return [argument.replace(FIXTURE_PLACEHOLDER, fixture) for argument in command]
 
 
 def resolve_compose_file(definition: ComposeEnvironmentDefinition, base: Path) -> Path:
@@ -77,6 +90,7 @@ class ComposeEnvironmentDriver:
         run_suffix: str,
         work_root: Path,
         allow_unsafe: bool = False,
+        fixture: str | None = None,
     ) -> None:
         self.definition = definition
         self.compose_file = compose_file.resolve()
@@ -84,6 +98,7 @@ class ComposeEnvironmentDriver:
         self.work_dir = work_root.resolve() / self.project_name
         self.env_file = self.work_dir / "compose.env"
         self.allow_unsafe = allow_unsafe
+        self.fixture = fixture
         self._ports: dict[str, int] = {}
         self._service_urls: dict[str, str] = {}
         self.log_truncated = False
@@ -244,10 +259,18 @@ class ComposeEnvironmentDriver:
 
     async def restore(self, handle: EnvironmentHandle) -> None:
         spec = self.definition.restore
-        try:
-            result = await self.exec(
-                handle, spec.service, list(spec.command), float(spec.timeout_seconds)
+        command = substitute_fixture(list(spec.command), self.fixture)
+        if any(FIXTURE_PLACEHOLDER in argument for argument in command):
+            # Defense in depth: the loader rejects this up front, but the
+            # driver is also constructed directly by env-check and tests.
+            raise EnvironmentDriverError(
+                f"Restore command still references {FIXTURE_PLACEHOLDER} after "
+                "substitution; provide a fixture",
+                code=FailureCode.ENV_COMPOSE_INVALID,
+                details={"command": command},
             )
+        try:
+            result = await self.exec(handle, spec.service, command, float(spec.timeout_seconds))
         except EnvironmentDriverError as exc:
             raise EnvironmentDriverError(
                 f"Restore command could not run: {exc.message}",
@@ -260,7 +283,7 @@ class ComposeEnvironmentDriver:
                 code=FailureCode.ENV_RESTORE_FAILED,
                 details={
                     "service": spec.service,
-                    "command": list(spec.command),
+                    "command": command,
                     "exit_code": result.exit_code,
                 },
             )

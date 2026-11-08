@@ -10,7 +10,11 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from reprocase.case.digests import case_digest
-from reprocase.case.models import EnvironmentDefinition, EvalCase
+from reprocase.case.models import (
+    EnvironmentDefinition,
+    EvalCase,
+    FakeEnvironmentDefinition,
+)
 from reprocase.errors import CaseValidationError, FailureCode
 
 _ENVIRONMENT_ADAPTER: TypeAdapter[EnvironmentDefinition] = TypeAdapter(EnvironmentDefinition)
@@ -25,6 +29,7 @@ class LoadedCase:
     environment: EnvironmentDefinition
     digest: str
     compose_path: Path | None = None
+    fixture: str | None = None
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -77,6 +82,46 @@ def _resolve_reference(root: Path, reference: Path) -> Path:
     return candidate
 
 
+def resolve_restore_fixture(
+    *,
+    case_fixture: str | None,
+    environment: EnvironmentDefinition,
+) -> str | None:
+    """Resolve the effective restore fixture with fail-fast consistency checks.
+
+    Precedence: the EvalCase ``environment.fixture`` overrides the environment
+    definition's ``restore.fixture_default``. A ``${FIXTURE}`` placeholder in the
+    restore command without a value — and a value without a placeholder — are
+    both rejected so a fixture can never silently do nothing.
+    """
+
+    if isinstance(environment, FakeEnvironmentDefinition):
+        if case_fixture is not None:
+            raise CaseValidationError(
+                "environment.fixture is only supported for docker_compose environments",
+                code=FailureCode.CASE_SCHEMA_INVALID,
+            )
+        return None
+
+    fixture = case_fixture if case_fixture is not None else environment.restore.fixture_default
+    references = environment.restore.references_fixture
+    if references and fixture is None:
+        raise CaseValidationError(
+            "Restore command references ${FIXTURE} but neither the EvalCase "
+            "environment.fixture nor restore.fixture_default provides a value",
+            code=FailureCode.CASE_REFERENCE_MISSING,
+            details={"restore_command": list(environment.restore.command)},
+        )
+    if fixture is not None and not references:
+        raise CaseValidationError(
+            "A fixture was provided but the restore command contains no "
+            "${FIXTURE} placeholder to receive it",
+            code=FailureCode.CASE_SCHEMA_INVALID,
+            details={"fixture": fixture},
+        )
+    return fixture
+
+
 def load_case(path: Path | str) -> LoadedCase:
     case_path = Path(path).expanduser().resolve()
     root = case_path.parent
@@ -126,4 +171,7 @@ def load_case(path: Path | str) -> LoadedCase:
         environment=environment,
         digest=digest,
         compose_path=compose_path,
+        fixture=resolve_restore_fixture(
+            case_fixture=case.environment.fixture, environment=environment
+        ),
     )

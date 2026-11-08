@@ -22,12 +22,8 @@ pytestmark = [requires_docker, pytest.mark.docker, pytest.mark.slow]
 
 
 def test_twenty_cycles_identical_digests(tmp_path: Path) -> None:
-    definition, compose_file, slug = load_compose_target(SUPPORT_WORLD_ENV)
-    report = asyncio.run(
-        run_environment_check(
-            definition, compose_file, cycles=20, slug=slug, work_root=tmp_path / "env"
-        )
-    )
+    target = load_compose_target(SUPPORT_WORLD_ENV)
+    report = asyncio.run(run_environment_check(target, cycles=20, work_root=tmp_path / "env"))
 
     assert not report.failures, [cycle.failure_message for cycle in report.failures]
     assert len(report.digests) == 20

@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from reprocase.cli import app
 from reprocase.environments.check import load_compose_target, run_environment_check
-from reprocase.errors import FailureCode
+from reprocase.errors import CaseValidationError, FailureCode
 
 # Digest of the M5 fixture (ORD-3003 + approvals collection); the M1-era value
 # sha256:5189f4f2... is recorded in docs/m1.md as a historical observation.
@@ -44,10 +44,14 @@ def _write_variant(tmp_path: Path, mutate: Any) -> Path:
     return target
 
 
-def _run_once(target: Path, work_root: Path) -> Any:
-    definition, compose_file, slug = load_compose_target(target)
+def _run_once(
+    target_path: Path, work_root: Path, fixture_override: str | None = None, cycles: int = 1
+) -> Any:
+    target = load_compose_target(target_path)
     return asyncio.run(
-        run_environment_check(definition, compose_file, cycles=1, slug=slug, work_root=work_root)
+        run_environment_check(
+            target, cycles=cycles, work_root=work_root, fixture_override=fixture_override
+        )
     )
 
 
@@ -59,9 +63,50 @@ def test_single_cycle_digest_and_cleanup(tmp_path: Path) -> None:
     assert _residual_resources() == []
 
 
+def test_fixture_default_keeps_canonical_digest(tmp_path: Path) -> None:
+    """The ${FIXTURE} migration with fixture_default restores the same state."""
+
+    assert load_compose_target(SUPPORT_WORLD_ENV).fixture == "/fixtures/refund.json"
+    report = _run_once(SUPPORT_WORLD_ENV, tmp_path / "env")
+    assert not report.failures
+    assert report.digests == (GOLDEN_DIGEST,)
+
+
+def test_fixture_override_changes_digest_stably(tmp_path: Path) -> None:
+    """A different fixture restores different but cycle-stable state."""
+
+    report = _run_once(
+        SUPPORT_WORLD_ENV,
+        tmp_path / "env",
+        fixture_override="/fixtures/refund-variant.json",
+        cycles=2,
+    )
+    assert not report.failures
+    assert len(report.digests) == 2
+    assert report.digests_identical
+    assert report.digests[0] != GOLDEN_DIGEST
+
+
+def test_fixture_override_without_placeholder_is_rejected(tmp_path: Path) -> None:
+    def mutate(doc: dict[str, Any]) -> None:
+        doc["restore"]["command"] = ["python", "-m", "app.reset", "/fixtures/refund.json"]
+        doc["restore"].pop("fixture_default", None)
+
+    target = _write_variant(tmp_path, mutate)
+    loaded = load_compose_target(target)
+    assert loaded.fixture is None
+    with pytest.raises(CaseValidationError):
+        asyncio.run(
+            run_environment_check(
+                loaded, cycles=1, work_root=tmp_path / "env", fixture_override="/fixtures/x.json"
+            )
+        )
+
+
 def test_restore_failure_is_classified(tmp_path: Path) -> None:
     def mutate(doc: dict[str, Any]) -> None:
         doc["restore"]["command"] = ["python", "-c", "import sys; sys.exit(3)"]
+        doc["restore"].pop("fixture_default", None)
 
     report = _run_once(_write_variant(tmp_path, mutate), tmp_path / "env")
 

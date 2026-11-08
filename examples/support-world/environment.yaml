@@ -11,8 +11,11 @@ compose:
 restore:
   strategy: command
   service: api
-  command: ["python", "-m", "app.reset", "/fixtures/refund.json"]
+  # ${FIXTURE} is substituted per EvalCase (environment.fixture overrides the
+  # default below), so many cases can share this one definition.
+  command: ["python", "-m", "app.reset", "${FIXTURE}"]
   timeout_seconds: 30
+  fixture_default: /fixtures/refund.json
 
 healthcheck:
   type: http

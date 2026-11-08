@@ -144,6 +144,20 @@
           ],
           "title": "Driver",
           "type": "string"
+        },
+        "fixture": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fixture"
         }
       },
       "required": [
