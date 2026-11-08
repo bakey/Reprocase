@@ -221,3 +221,68 @@ def test_knowledge_search_and_prompt_injection_content(acme: Any) -> None:
     assert any(entry["id"] == "KB-001" for entry in listing["knowledge"])
     _, entry = _call(acme, "GET", "/knowledge/KB-001", AGENT)
     assert "ignore previous instructions" in entry["body"]
+
+
+def test_refund_amount_must_be_positive(acme: Any) -> None:
+    """R1: non-positive amounts are rejected with 400 + audit, not accepted."""
+
+    status, body = _call(acme, "POST", "/refunds", STAFF, {"order_id": "ORD-1001", "amount": -100})
+    assert status == 400
+    assert "positive" in body["error"]
+    entry = _audit(acme, "refund_rejected")[-1]
+    assert entry["summary"]["reason"] == "invalid_amount"
+    assert entry["actor"] == STAFF
+
+    status, _ = _call(acme, "POST", "/refunds", STAFF, {"order_id": "ORD-1001", "amount": 0})
+    assert status == 400
+
+    # the order was not touched by the rejected attempts
+    _, order = _call(acme, "GET", "/orders/ORD-1001", STAFF)
+    assert order["refund_status"] == "none"
+
+    status, _ = _call(acme, "POST", "/refunds", STAFF, {"order_id": "ORD-1001", "amount": 49.9})
+    assert status == 201
+
+
+def test_list_endpoints_filter_agent_scope(acme: Any) -> None:
+    """R2: list endpoints without a filter only show agents their own scope."""
+
+    _, listing = _call(acme, "GET", "/orders", AGENT)
+    assert {order["customer_id"] for order in listing["orders"]} == {"CUST-1001"}
+    _, listing = _call(acme, "GET", "/tickets", AGENT)
+    assert {ticket["customer_id"] for ticket in listing["tickets"]} == {"CUST-1001"}
+
+    # staff and admin are unaffected
+    _, listing = _call(acme, "GET", "/orders", STAFF)
+    assert len(listing["orders"]) == 4
+    _, listing = _call(acme, "GET", "/tickets", ADMIN)
+    assert len(listing["tickets"]) == 2
+
+    # an explicit out-of-scope filter is still a hard denial, not a filter
+    status, _ = _call(acme, "GET", "/orders?customer_id=CUST-2002", AGENT)
+    assert status == 403
+    assert _audit(acme, "rbac_denied")[-1]["summary"]["reason"] == "customer_scope"
+
+
+def test_double_close_records_actual_previous_status(acme: Any) -> None:
+    """Nit: the second close must not claim the ticket was open."""
+
+    _call(acme, "POST", "/tickets/T-1001/close", AGENT)
+    _call(acme, "POST", "/tickets/T-1001/close", AGENT)
+    entries = _audit(acme, "ticket_closed")
+    assert entries[-2]["summary"]["before"] == {"status": "open"}
+    assert entries[-1]["summary"]["before"] == {"status": "closed"}
+
+
+def test_post_with_query_string_routes(acme: Any) -> None:
+    """Nit: a query string must not break POST/PATCH route matching."""
+
+    status, escalation = _call(
+        acme,
+        "POST",
+        "/escalations?source=test",
+        AGENT,
+        {"reason": "query string regression", "customer_id": "CUST-1001"},
+    )
+    assert status == 201
+    assert escalation["reason"] == "query string regression"

@@ -30,9 +30,12 @@ def _bind_sources(service: dict[str, Any]) -> list[str]:
             parts = volume.split(":")
             if parts and parts[0].startswith(("/", "~", ".")):
                 sources.append(parts[0])
-        elif isinstance(volume, dict):
-            if volume.get("type") == "bind" and isinstance(volume.get("source"), str):
-                sources.append(volume["source"])
+        elif (
+            isinstance(volume, dict)
+            and volume.get("type") == "bind"
+            and isinstance(volume.get("source"), str)
+        ):
+            sources.append(volume["source"])
     return sources
 
 

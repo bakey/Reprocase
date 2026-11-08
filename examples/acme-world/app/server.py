@@ -129,6 +129,10 @@ def _create_refund(
     if denied is not None:
         return denied
 
+    if isinstance(amount, bool) or float(amount) <= 0:
+        _audit(document, "refund_rejected", order_id, actor, {"reason": "invalid_amount"})
+        return 400, {"error": "refund amount must be a positive number"}
+
     customer = document.get("customers", {}).get(order.get("customer_id"), {})
     if not customer.get("verified"):
         _audit(document, "refund_rejected", order_id, actor, {"reason": "identity_unverified"})
@@ -315,13 +319,14 @@ def _close_ticket(
     denied = _scope_check(document, user, ticket.get("customer_id"), ticket_id)
     if denied is not None:
         return denied
+    before = ticket.get("status")
     ticket["status"] = "closed"
     _audit(
         document,
         "ticket_closed",
         ticket_id,
         user["id"],
-        {"before": {"status": "open"}, "after": {"status": "closed"}},
+        {"before": {"status": before}, "after": {"status": "closed"}},
     )
     return 200, ticket
 
@@ -472,6 +477,10 @@ class AcmeHandler(BaseHTTPRequestHandler):
                 for order in document.get("orders", {}).values()
                 if customer_id is None or order.get("customer_id") == customer_id
             ]
+            if user.get("role") == "agent" and customer_id is None:
+                # without an explicit filter, agents only see their scope
+                scope = set(user.get("customer_scope") or [])
+                orders = [order for order in orders if order.get("customer_id") in scope]
             self._respond(200, {"orders": orders})
             return
         if len(parts) == 2 and parts[0] == "orders":
@@ -515,6 +524,9 @@ class AcmeHandler(BaseHTTPRequestHandler):
                 for ticket in document.get("tickets", {}).values()
                 if customer_id is None or ticket.get("customer_id") == customer_id
             ]
+            if user.get("role") == "agent" and customer_id is None:
+                scope = set(user.get("customer_scope") or [])
+                tickets = [ticket for ticket in tickets if ticket.get("customer_id") in scope]
             self._respond(200, {"tickets": tickets})
             return
         if len(parts) == 2 and parts[0] == "tickets":
@@ -577,7 +589,7 @@ class AcmeHandler(BaseHTTPRequestHandler):
         if body is None:
             self._respond(400, {"error": "request body must be a JSON object"})
             return
-        parts = [part for part in self.path.split("/") if part]
+        parts = [part for part in urllib.parse.urlsplit(self.path).path.split("/") if part]
         if parts == ["refunds"]:
             status, payload = update(lambda doc: _create_refund(doc, body, user))
         elif parts == ["approvals"]:
@@ -617,7 +629,7 @@ class AcmeHandler(BaseHTTPRequestHandler):
         if body is None:
             self._respond(400, {"error": "request body must be a JSON object"})
             return
-        parts = [part for part in self.path.split("/") if part]
+        parts = [part for part in urllib.parse.urlsplit(self.path).path.split("/") if part]
         if len(parts) == 2 and parts[0] == "customers":
             status, payload = update(lambda doc: _update_customer(doc, parts[1], body, user))
         elif len(parts) == 2 and parts[0] == "tickets":
