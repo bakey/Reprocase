@@ -1,0 +1,40 @@
+api_version: reprocase.dev/environment/v0
+driver: docker_compose
+
+compose:
+  file: compose.yaml
+  project_prefix: reprocase
+  startup_timeout_seconds: 90
+  port_variables:
+    API_PORT: 8000
+
+restore:
+  strategy: command
+  service: api
+  # ${FIXTURE} is substituted per EvalCase (environment.fixture overrides the
+  # default below), so many cases can share this one definition.
+  command: ["python", "-m", "app.reset", "${FIXTURE}"]
+  timeout_seconds: 30
+  fixture_default: /fixtures/acme.json
+
+healthcheck:
+  type: http
+  url: "http://127.0.0.1:${API_PORT}/health"
+  timeout_seconds: 30
+
+state:
+  capture:
+    service: api
+    command: ["python", "-m", "app.export_state"]
+    format: json
+    timeout_seconds: 30
+  canonicalization:
+    remove_paths:
+      - /metadata/generated_at
+      - /runtime
+    sort_arrays_by:
+      /audit_log: sequence
+      /emails: sent_seq
+      /refunds: created_seq
+      /escalations: created_seq
+      /calendar: id

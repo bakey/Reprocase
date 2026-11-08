@@ -168,6 +168,12 @@ testable increment.
 | M4 — Evidence and resilience | Reports, artifacts, cancellation, timeouts, crash recovery, stronger failure attribution | **Complete** |
 | M5 — External alpha | Example eval pack, documentation, packaging, CI workflow, first outside users | **Complete** |
 
+Phase 2 is underway:
+
+| Milestone | Outcome | Status |
+|---|---|---|
+| M6 — Acme Support World v1 | 12-entity world, RBAC + policy engine, fixture parameterization, digest acceptance | **Complete** |
+
 Phase 1 is complete and released as `0.1.0-alpha.1`. Beyond Phase 1, the roadmap includes
 enterprise workflow eval packs, multi-trial statistics, perturbation testing, regression gates,
 dependency recording and replay, trajectory branching, and a production trace-to-EvalCase
@@ -212,6 +218,15 @@ digests:
 
 ```bash
 uv run reprocase env-check examples/support-world/environment.yaml --cycles 3
+```
+
+### Phase 2: Acme Support World
+
+A richer 12-entity world with RBAC and a policy engine lives in `examples/acme-world/`:
+
+```bash
+uv run reprocase env-check examples/acme-world/environment.yaml --cycles 3
+uv run reprocase run examples/acme-world/refund-smoke.yaml
 ```
 
 ### M2: deterministic evaluation loop
