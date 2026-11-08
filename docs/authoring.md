@@ -160,6 +160,12 @@ Resolution and validation rules:
   silently does nothing is an authoring error and fails `validate`).
 - The fixture value is substituted as a plain argv element — no shell is ever
   involved — so it is typically a path inside the image or a mounted volume.
+- `${FIXTURE}` is substituted in `restore.command` only; using it anywhere else
+  (for example `state.capture.command`, `healthcheck.url`, or `compose.file`)
+  is rejected at load time. Blank fixture values are rejected as well.
+- The `fake` driver does not support fixtures — the loader rejects
+  `environment.fixture` on fake cases, since fake environments carry their
+  initial state inline.
 - A different fixture produces a different initial state digest **and** a
   different EvalCase digest, so evidence stays attributable.
 

@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 
 import pytest
 import yaml
+from conftest import SUPPORT_WORLD_ENV
+from pydantic import ValidationError
+from typer.testing import CliRunner
 
 from reprocase.case.loader import load_case, resolve_restore_fixture
 from reprocase.case.models import ComposeEnvironmentDefinition, RestoreSpec
+from reprocase.cli import app
+from reprocase.environments.check import ComposeTarget, run_environment_check
 from reprocase.environments.compose import substitute_fixture
 from reprocase.errors import CaseValidationError, FailureCode
 
@@ -156,3 +163,84 @@ class TestRestoreSpecModel:
             fixture_default="/fixtures/d.json",
         )
         assert spec.fixture_default == "/fixtures/d.json"
+
+
+class TestPlaceholderScope:
+    """${FIXTURE} is only substituted in restore.command (PR #6 review)."""
+
+    def test_healthcheck_url_rejected(self) -> None:
+        with pytest.raises(ValidationError, match=re.escape("only substituted in restore.command")):
+            ComposeEnvironmentDefinition.model_validate(
+                {
+                    "api_version": "reprocase.dev/environment/v0",
+                    "driver": "docker_compose",
+                    "restore": {"service": "api", "command": PLACEHOLDER_COMMAND},
+                    "healthcheck": {"url": "http://127.0.0.1:8000/${FIXTURE}"},
+                    "state": {"capture": {"service": "api", "command": ["python"]}},
+                }
+            )
+
+    def test_capture_command_rejected(self) -> None:
+        with pytest.raises(ValidationError, match=re.escape("state.capture.command")):
+            ComposeEnvironmentDefinition.model_validate(
+                {
+                    "api_version": "reprocase.dev/environment/v0",
+                    "driver": "docker_compose",
+                    "restore": {"service": "api", "command": PLACEHOLDER_COMMAND},
+                    "healthcheck": {"url": "http://127.0.0.1:8000/health"},
+                    "state": {"capture": {"service": "api", "command": ["echo", "${FIXTURE}"]}},
+                }
+            )
+
+    def test_compose_file_rejected(self) -> None:
+        with pytest.raises(ValidationError, match=re.escape("compose.file")):
+            ComposeEnvironmentDefinition.model_validate(
+                {
+                    "api_version": "reprocase.dev/environment/v0",
+                    "driver": "docker_compose",
+                    "compose": {"file": "${FIXTURE}/compose.yaml"},
+                    "restore": {"service": "api", "command": PLACEHOLDER_COMMAND},
+                    "healthcheck": {"url": "http://127.0.0.1:8000/health"},
+                    "state": {"capture": {"service": "api", "command": ["python"]}},
+                }
+            )
+
+
+class TestBlankFixtureOverride:
+    """Blank --fixture values fail fast instead of restoring an empty path."""
+
+    def _target(self, tmp_path: Path) -> ComposeTarget:
+        (tmp_path / "compose.yaml").write_text("services: {api: {image: t}}\n", encoding="utf-8")
+        return ComposeTarget(
+            definition=_compose_definition(list(PLACEHOLDER_COMMAND)),
+            compose_file=tmp_path / "compose.yaml",
+            slug="blank-fixture",
+        )
+
+    def test_empty_override_rejected_before_any_container(self, tmp_path: Path) -> None:
+        with pytest.raises(CaseValidationError, match="must not be empty") as excinfo:
+            asyncio.run(
+                run_environment_check(
+                    self._target(tmp_path),
+                    cycles=1,
+                    work_root=tmp_path / "env",
+                    fixture_override="",
+                )
+            )
+        assert excinfo.value.code == FailureCode.CASE_SCHEMA_INVALID
+
+    def test_whitespace_override_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(CaseValidationError, match="must not be empty"):
+            asyncio.run(
+                run_environment_check(
+                    self._target(tmp_path),
+                    cycles=1,
+                    work_root=tmp_path / "env",
+                    fixture_override="   ",
+                )
+            )
+
+    def test_cli_fixture_flag_rejects_blank_value(self) -> None:
+        result = CliRunner().invoke(app, ["env-check", str(SUPPORT_WORLD_ENV), "--fixture", ""])
+        assert result.exit_code == 2
+        assert "must not be empty" in result.output

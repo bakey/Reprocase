@@ -121,6 +121,15 @@ async def run_environment_check(
 ) -> EnvCheckReport:
     definition, compose_file, slug = target.definition, target.compose_file, target.slug
     fixture = fixture_override if fixture_override is not None else target.fixture
+    if fixture is not None and not fixture.strip():
+        # Model fields carry min_length=1, but the CLI --fixture option and the
+        # fixture_override parameter do not; reject blanks before any container
+        # starts instead of failing the restore with a confusing empty path.
+        raise CaseValidationError(
+            "Fixture must not be empty or whitespace-only",
+            code=FailureCode.CASE_SCHEMA_INVALID,
+            details={"fixture": fixture},
+        )
     if fixture is not None and not definition.restore.references_fixture:
         raise CaseValidationError(
             "A fixture was provided but the restore command contains no "

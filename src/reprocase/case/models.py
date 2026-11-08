@@ -268,6 +268,22 @@ class ComposeEnvironmentDefinition(StrictModel):
     healthcheck: HealthcheckSpec
     state: StateSpec
 
+    @model_validator(mode="after")
+    def fixture_placeholder_only_in_restore(self) -> ComposeEnvironmentDefinition:
+        offenders: list[str] = []
+        if self.compose.file is not None and FIXTURE_PLACEHOLDER in str(self.compose.file):
+            offenders.append("compose.file")
+        if FIXTURE_PLACEHOLDER in self.healthcheck.url:
+            offenders.append("healthcheck.url")
+        if any(FIXTURE_PLACEHOLDER in argument for argument in self.state.capture.command):
+            offenders.append("state.capture.command")
+        if offenders:
+            raise ValueError(
+                f"{FIXTURE_PLACEHOLDER} is only substituted in restore.command; "
+                f"found in: {', '.join(offenders)}"
+            )
+        return self
+
 
 type EnvironmentDefinition = Annotated[
     FakeEnvironmentDefinition | ComposeEnvironmentDefinition,
