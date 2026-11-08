@@ -150,8 +150,88 @@ class TestCommandGraderSpec(StrictModel):
     critical: bool = True
 
 
+class InvariantRule(StrictModel):
+    scope: str = Field(min_length=1, max_length=500, pattern=r"^/")
+    operator: Literal["unchanged_except"] = "unchanged_except"
+    allow_paths: tuple[str, ...] = ()
+
+
+class InvariantGraderSpec(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["invariant"]
+    rules: tuple[InvariantRule, ...] = Field(min_length=1)
+    critical: bool = True
+
+
+class TemporalEventRef(StrictModel):
+    event: str = Field(min_length=1, max_length=128)
+    entity: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class TemporalConstraintRule(StrictModel):
+    before: TemporalEventRef | None = None
+    after: TemporalEventRef | None = None
+    forbidden: TemporalEventRef | None = None
+
+    @model_validator(mode="after")
+    def well_formed_constraint(self) -> TemporalConstraintRule:
+        if self.before is not None and self.after is not None and self.forbidden is None:
+            return self
+        if self.forbidden is not None and self.after is not None and self.before is None:
+            return self
+        raise ValueError(
+            "each constraint needs either before+after (ordering) or forbidden+after "
+            "(forbidden event must not occur after the anchor)"
+        )
+
+
+class TemporalConstraintGraderSpec(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["temporal_constraint"]
+    constraints: tuple[TemporalConstraintRule, ...] = Field(min_length=1)
+    critical: bool = True
+
+
+class ToolPolicyForbiddenRule(StrictModel):
+    tool: str = Field(min_length=1, max_length=128)
+    args_match: dict[str, Any] = Field(default_factory=dict)
+    max_occurrences: Annotated[int, Field(ge=0)] = 0
+
+
+class ToolPolicyRequiredRule(StrictModel):
+    tool: str = Field(min_length=1, max_length=128)
+    args_match: dict[str, Any] = Field(default_factory=dict)
+
+
+class NoProgressRepeatRule(StrictModel):
+    max_identical_calls: Annotated[int, Field(ge=2)] = 3
+    severity: Literal["warning"] = "warning"
+
+
+class ToolPolicyPattern(StrictModel):
+    no_progress_repeat: NoProgressRepeatRule
+
+
+class ToolPolicySpec(StrictModel):
+    forbidden: tuple[ToolPolicyForbiddenRule, ...] = ()
+    required: tuple[ToolPolicyRequiredRule, ...] = ()
+    patterns: tuple[ToolPolicyPattern, ...] = ()
+
+
+class ToolPolicyGraderSpec(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    type: Literal["tool_policy"]
+    policy: ToolPolicySpec
+    critical: bool = True
+
+
 type GraderSpec = Annotated[
-    FakeGraderSpec | StateAssertionGraderSpec | TestCommandGraderSpec,
+    FakeGraderSpec
+    | StateAssertionGraderSpec
+    | TestCommandGraderSpec
+    | InvariantGraderSpec
+    | TemporalConstraintGraderSpec
+    | ToolPolicyGraderSpec,
     Field(discriminator="type"),
 ]
 

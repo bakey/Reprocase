@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -39,7 +40,12 @@ class AcmeTool:
 
     def _send(self, arguments: Mapping[str, Any]) -> Any:
         path = self.path_template.format(**arguments)
-        body = dict(arguments) if self.method in {"POST", "PATCH"} else None
+        path_vars = set(re.findall(r"{(\w+)}", self.path_template))
+        body = (
+            {key: value for key, value in arguments.items() if key not in path_vars}
+            if self.method in {"POST", "PATCH"}
+            else None
+        )
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(body).encode("utf-8") if body is not None else None,

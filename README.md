@@ -173,6 +173,7 @@ Phase 2 is underway:
 | Milestone | Outcome | Status |
 |---|---|---|
 | M6 — Acme Support World v1 | 12-entity world, RBAC + policy engine, fixture parameterization, digest acceptance | **Complete** |
+| M7 — Grader extensions | invariant / temporal_constraint / tool_policy graders, critical gate + safety_violation split | **Complete** |
 
 Phase 1 is complete and released as `0.1.0-alpha.1`. Beyond Phase 1, the roadmap includes
 enterprise workflow eval packs, multi-trial statistics, perturbation testing, regression gates,

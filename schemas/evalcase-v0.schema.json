@@ -247,8 +247,11 @@
       "discriminator": {
         "mapping": {
           "fake": "#/$defs/FakeGraderSpec",
+          "invariant": "#/$defs/InvariantGraderSpec",
           "state_assertion": "#/$defs/StateAssertionGraderSpec",
-          "test_command": "#/$defs/TestCommandGraderSpec"
+          "temporal_constraint": "#/$defs/TemporalConstraintGraderSpec",
+          "test_command": "#/$defs/TestCommandGraderSpec",
+          "tool_policy": "#/$defs/ToolPolicyGraderSpec"
         },
         "propertyName": "type"
       },
@@ -261,8 +264,84 @@
         },
         {
           "$ref": "#/$defs/TestCommandGraderSpec"
+        },
+        {
+          "$ref": "#/$defs/InvariantGraderSpec"
+        },
+        {
+          "$ref": "#/$defs/TemporalConstraintGraderSpec"
+        },
+        {
+          "$ref": "#/$defs/ToolPolicyGraderSpec"
         }
       ]
+    },
+    "InvariantGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/InvariantRule"
+          },
+          "minItems": 1,
+          "title": "Rules",
+          "type": "array"
+        },
+        "type": {
+          "const": "invariant",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "rules"
+      ],
+      "title": "InvariantGraderSpec",
+      "type": "object"
+    },
+    "InvariantRule": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allow Paths",
+          "type": "array"
+        },
+        "operator": {
+          "const": "unchanged_except",
+          "default": "unchanged_except",
+          "title": "Operator",
+          "type": "string"
+        },
+        "scope": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "^/",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "title": "InvariantRule",
+      "type": "object"
     },
     "Metadata": {
       "additionalProperties": false,
@@ -296,6 +375,25 @@
         "title"
       ],
       "title": "Metadata",
+      "type": "object"
+    },
+    "NoProgressRepeatRule": {
+      "additionalProperties": false,
+      "properties": {
+        "max_identical_calls": {
+          "default": 3,
+          "minimum": 2,
+          "title": "Max Identical Calls",
+          "type": "integer"
+        },
+        "severity": {
+          "const": "warning",
+          "default": "warning",
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "title": "NoProgressRepeatRule",
       "type": "object"
     },
     "OutputSpec": {
@@ -390,6 +488,112 @@
       "title": "TaskSpec",
       "type": "object"
     },
+    "TemporalConstraintGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "items": {
+            "$ref": "#/$defs/TemporalConstraintRule"
+          },
+          "minItems": 1,
+          "title": "Constraints",
+          "type": "array"
+        },
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "temporal_constraint",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "constraints"
+      ],
+      "title": "TemporalConstraintGraderSpec",
+      "type": "object"
+    },
+    "TemporalConstraintRule": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TemporalEventRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TemporalEventRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "forbidden": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TemporalEventRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "TemporalConstraintRule",
+      "type": "object"
+    },
+    "TemporalEventRef": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity"
+        },
+        "event": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "title": "TemporalEventRef",
+      "type": "object"
+    },
     "TestCommandGraderSpec": {
       "additionalProperties": false,
       "properties": {
@@ -438,6 +642,129 @@
         "command"
       ],
       "title": "TestCommandGraderSpec",
+      "type": "object"
+    },
+    "ToolPolicyForbiddenRule": {
+      "additionalProperties": false,
+      "properties": {
+        "args_match": {
+          "additionalProperties": true,
+          "title": "Args Match",
+          "type": "object"
+        },
+        "max_occurrences": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Occurrences",
+          "type": "integer"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ToolPolicyForbiddenRule",
+      "type": "object"
+    },
+    "ToolPolicyGraderSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "default": true,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/ToolPolicySpec"
+        },
+        "type": {
+          "const": "tool_policy",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "policy"
+      ],
+      "title": "ToolPolicyGraderSpec",
+      "type": "object"
+    },
+    "ToolPolicyPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "no_progress_repeat": {
+          "$ref": "#/$defs/NoProgressRepeatRule"
+        }
+      },
+      "required": [
+        "no_progress_repeat"
+      ],
+      "title": "ToolPolicyPattern",
+      "type": "object"
+    },
+    "ToolPolicyRequiredRule": {
+      "additionalProperties": false,
+      "properties": {
+        "args_match": {
+          "additionalProperties": true,
+          "title": "Args Match",
+          "type": "object"
+        },
+        "tool": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ToolPolicyRequiredRule",
+      "type": "object"
+    },
+    "ToolPolicySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "forbidden": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolPolicyForbiddenRule"
+          },
+          "title": "Forbidden",
+          "type": "array"
+        },
+        "patterns": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolPolicyPattern"
+          },
+          "title": "Patterns",
+          "type": "array"
+        },
+        "required": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolPolicyRequiredRule"
+          },
+          "title": "Required",
+          "type": "array"
+        }
+      },
+      "title": "ToolPolicySpec",
       "type": "object"
     },
     "ToolSpec": {

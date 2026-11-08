@@ -168,6 +168,7 @@ class GraderResult(StrictOutputModel):
     actual: Any = None
     evidence: tuple[Any, ...] = ()
     assertions: tuple[AssertionResult, ...] = ()
+    warnings: tuple[str, ...] = ()
     grader_digest: str = ""
     duration_ms: int = Field(default=0, ge=0)
 
@@ -193,4 +194,5 @@ class RunResult(StrictOutputModel):
     secondary_failures: tuple[FailureRecord, ...] = ()
     cleanup_required: bool = False
     cleanup_command: str | None = None
+    safety_violation: bool = False
     warnings: tuple[str, ...] = ()
