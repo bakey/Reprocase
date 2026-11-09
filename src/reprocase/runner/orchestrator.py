@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +65,7 @@ from reprocase.runner.fakes import FakeAgent, FakeEnvironment, FakeGrader
 from reprocase.runner.scripted import ActorContext, load_actor
 from reprocase.runner.state_machine import RunStateMachine
 from reprocase.tools.broker import ToolBroker
-from reprocase.tools.redaction import redact
+from reprocase.tools.redaction import redact, scrub_secrets
 from reprocase.tools.registry import ToolRegistry
 from reprocase.tools.validation import validate_tools
 from reprocase.vcs import git_identity
@@ -150,12 +151,25 @@ def _run_loop(coro: Coroutine[Any, Any, None]) -> None:
             loop.remove_signal_handler(signal.SIGINT)
 
 
+def _env_secret_values() -> tuple[str, ...]:
+    """Concrete secret values (e.g. LLM API keys) scrubbed from every event
+    payload and the persisted agent output — key-based redaction cannot catch
+    a secret echoed into free text by a model."""
+
+    return tuple(
+        value
+        for name, value in os.environ.items()
+        if name.startswith("REPROCASE_") and name.endswith("_API_KEY") and value
+    )
+
+
 class _RunDraft:
     def __init__(self) -> None:
         self.failures: list[FailureRecord] = []
         self.graders: list[GraderResult] = []
         self.agent_output: Any = None
         self.agent_error: str | None = None
+        self.observed_model: str | None = None
         self.usage: Usage | None = None
         self.states: list[StateSnapshot] = []
         self.state_diff_ref: ArtifactRef | None = None
@@ -524,6 +538,7 @@ async def _run_python_agent(
                     agent_result = agent_task.result()
                     draft.agent_output = agent_result.output
                     model_usage = agent_result.usage
+                    draft.observed_model = agent_result.model
                     recorder.emit(
                         "agent.completed",
                         source="python_agent",
@@ -1025,7 +1040,12 @@ def run_case(
             ),
         )
     storage.write_manifest(manifest)
-    recorder = EventRecorder(storage.events_path, run_id)
+    secret_values = _env_secret_values()
+    recorder = EventRecorder(
+        storage.events_path,
+        run_id,
+        payload_scrubber=partial(scrub_secrets, secrets=secret_values),
+    )
     session = _RunSession(recorder)
     started_at = datetime.now(UTC)
     monotonic_started = time.monotonic_ns()
@@ -1141,8 +1161,13 @@ def run_case(
         finished_at=finished_at,
         duration_ms=max(0, (time.monotonic_ns() - monotonic_started) // 1_000_000),
         reproducibility_level="R0" if is_fake else "R1",
-        # field-level redaction also applies to the persisted result (§17.1)
-        agent_output=redact(draft.agent_output, extra_keys=loaded.case.output.redaction.keys),
+        agent=agent_identity.model_copy(update={"model": draft.observed_model}),
+        # field-level redaction also applies to the persisted result (§17.1);
+        # secret-value scrubbing catches keys echoed into free text (M8)
+        agent_output=scrub_secrets(
+            redact(draft.agent_output, extra_keys=loaded.case.output.redaction.keys),
+            secret_values,
+        ),
         usage=draft.usage,
         states=tuple(draft.states),
         state_diff=draft.state_diff_ref,

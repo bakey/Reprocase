@@ -94,6 +94,24 @@ class ToolBroker:
     def tool_names(self) -> tuple[str, ...]:
         return tuple(name for name in self.registry.names if name in self.allow)
 
+    def tool_definitions(self) -> tuple[dict[str, Any], ...]:
+        """Allowed tools as ``{name, description, input_schema}`` — the
+        projection LLM agents consume to advertise tools to a model."""
+
+        definitions: list[dict[str, Any]] = []
+        for name in self.tool_names:
+            tool = self.registry.get(name)
+            if tool is None:  # pragma: no cover - tool_names comes from the registry
+                continue
+            definitions.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": dict(tool.input_schema),
+                }
+            )
+        return tuple(definitions)
+
     def _redact(self, value: Any) -> Any:
         return redact(value, extra_keys=self.redact_keys)
 

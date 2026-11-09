@@ -24,3 +24,28 @@ def _redact(value: Any, sensitive: frozenset[str] | set[str]) -> Any:
         # tuples collapse to JSON-compatible lists
         return [_redact(item, sensitive) for item in value]
     return value
+
+
+def scrub_secrets(value: Any, secrets: tuple[str, ...] | list[str]) -> Any:
+    """Value-based scrubbing: replace known secret substrings inside every
+    string of an arbitrary JSON-like structure. Key-based redaction cannot
+    catch a secret echoed into free text (e.g. a model repeating an API key),
+    so the runner also scrubs the concrete secret values it knows from the
+    environment. Degenerate values (short or empty) are ignored.
+    """
+
+    usable = [secret for secret in secrets if secret and len(secret) >= 4]
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, str):
+            scrubbed = node
+            for secret in usable:
+                scrubbed = scrubbed.replace(secret, REDACTED)
+            return scrubbed
+        if isinstance(node, dict):
+            return {key: walk(item) for key, item in node.items()}
+        if isinstance(node, list | tuple):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(value) if usable else value

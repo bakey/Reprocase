@@ -173,6 +173,7 @@ Phase 2 is underway:
 | Milestone | Outcome | Status |
 |---|---|---|
 | M6 — Acme Support World v1 | 12-entity world, RBAC + policy engine, fixture parameterization, digest acceptance | **Complete** |
+| M8 — LLM Agent | OpenAI-compatible stdlib agent, dual-model env config, usage/model identity, secret value scrubbing | **Complete** |
 
 Phase 1 is complete and released as `0.1.0-alpha.1`. Beyond Phase 1, the roadmap includes
 enterprise workflow eval packs, multi-trial statistics, perturbation testing, regression gates,

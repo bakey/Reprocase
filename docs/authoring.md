@@ -202,6 +202,31 @@ async def run(task, tools, context):
   self-contained inside the case directory (the loader origin-checks every
   module level); extra dependencies belong in the environment image.
 
+### LLM-backed agents (M8)
+
+`examples/acme-world/agents/llm_agent.py` is a stdlib-only agent that drives the
+broker with any OpenAI-compatible Chat Completions API. Configure two models via
+environment variables (`REPROCASE_LLM_PROFILE` picks `primary`/`secondary`; the
+`REPROCASE_LLM2_*` set configures the secondary):
+
+```bash
+export REPROCASE_LLM_BASE_URL=... REPROCASE_LLM_API_KEY=... REPROCASE_LLM_MODEL=...
+export REPROCASE_LLM2_BASE_URL=... REPROCASE_LLM2_API_KEY=... REPROCASE_LLM2_MODEL=...
+REPROCASE_LLM_PROFILE=secondary uv run reprocase run examples/acme-world/refund-smoke-llm.yaml
+```
+
+Notes for LLM cases:
+
+- Keys never enter the case, events, or reports: the runner value-scrubs every
+  `REPROCASE_*_API_KEY` value from all evidence, so even a model echoing the key
+  into text cannot leak it.
+- Returning an `AgentResult` (instead of a bare dict) lets the agent report
+  `usage` and `model`; the run result then carries the observed model identity in
+  `agent.model` while the manifest keeps the pre-run declared identity.
+- Token totals are null when any response lacks a usage block — unknown is never
+  reported as zero.
+- See `docs/m8.md` for budget semantics, retry policy, and the wired cases.
+
 Tool providers are `module:function` factories building tool objects from the
 `EnvironmentHandle` (service URLs carry the per-run ports):
 
