@@ -22,6 +22,7 @@ class GraderContext:
     final_document: dict[str, Any] | None
     diff_ref: ArtifactRef | None
     agent_error: str | None
+    events: tuple[dict[str, Any], ...] = ()
 
 
 class Grader(Protocol):

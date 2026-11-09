@@ -150,6 +150,9 @@
         "GRADER_OUTPUT_INVALID",
         "GRADER_TIMEOUT",
         "TEST_COMMAND_FAILED",
+        "INVARIANT_VIOLATED",
+        "TEMPORAL_CONSTRAINT_VIOLATED",
+        "TOOL_POLICY_VIOLATED",
         "RUNNER_INVALID_TRANSITION",
         "RUNNER_STORAGE_ERROR",
         "RUNNER_INTERNAL_ERROR",
@@ -253,6 +256,14 @@
         },
         "status": {
           "$ref": "#/$defs/GraderStatus"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "required": [
@@ -505,6 +516,11 @@
     "run_id": {
       "title": "Run Id",
       "type": "string"
+    },
+    "safety_violation": {
+      "default": false,
+      "title": "Safety Violation",
+      "type": "boolean"
     },
     "schema_version": {
       "const": "reprocase.run-result/v0",

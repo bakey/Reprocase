@@ -49,6 +49,18 @@ def validate(
     typer.secho("PASS schema", fg=typer.colors.GREEN)
     typer.secho("PASS referenced environment", fg=typer.colors.GREEN)
     typer.secho("PASS fake component compatibility", fg=typer.colors.GREEN)
+    if loaded.environment.driver == "fake":
+        stateful = [
+            grader.id
+            for grader in loaded.case.graders
+            if grader.type in {"invariant", "temporal_constraint", "tool_policy"}
+        ]
+        if stateful:
+            typer.secho(
+                f"WARNING graders {stateful} require a real environment and are skipped "
+                "by the fake run flow",
+                fg=typer.colors.YELLOW,
+            )
     typer.echo(
         f"\nEvalCase {loaded.case.metadata.id}@{loaded.case.metadata.version} is valid\n"
         f"Digest: {loaded.digest}"
