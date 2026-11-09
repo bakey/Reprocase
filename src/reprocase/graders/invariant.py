@@ -18,7 +18,18 @@ from reprocase.results.models import AssertionResult, GraderResult, GraderStatus
 
 
 def _is_within(path: str, prefix: str) -> bool:
+    # defense in depth (F1): the model rejects scope="/" because a root-scope
+    # invariant is meaningless, but even if bypassed the root prefix must match
+    # everything — never fail open.
+    if prefix == "/":
+        return True
     return path == prefix or path.startswith(prefix + "/")
+
+
+def _join_scope(scope: str, allow: str) -> str:
+    # defense in depth (F2): the model rejects leading "/" in allow_paths, but
+    # even if bypassed, normalize so an absolute-looking entry still matches.
+    return scope.rstrip("/") + "/" + allow.lstrip("/")
 
 
 def evaluate_invariant(
@@ -46,10 +57,15 @@ def evaluate_invariant(
     ops = compute_diff(initial_document or {}, final_document)
     failures: list[AssertionResult] = []
     for rule in spec.rules:
-        allowed = [rule.scope + "/" + allow for allow in rule.allow_paths]
-        scope_missing = resolve(final_document, rule.scope) is MISSING and (
-            initial_document is None or resolve(initial_document, rule.scope) is MISSING
-        )
+        allowed = [_join_scope(rule.scope, allow) for allow in rule.allow_paths]
+        if rule.scope == "/":
+            # root scope means the whole document (defense in depth, F1); it
+            # is never "missing"
+            scope_missing = False
+        else:
+            scope_missing = resolve(final_document, rule.scope) is MISSING and (
+                initial_document is None or resolve(initial_document, rule.scope) is MISSING
+            )
         if scope_missing:
             violations: list[str] = []
         else:

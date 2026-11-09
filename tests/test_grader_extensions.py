@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from reprocase.case.loader import load_case
 from reprocase.case.models import (
     InvariantGraderSpec,
@@ -254,9 +257,6 @@ graders:
 
 
 def test_temporal_constraint_shape_validated(tmp_path: Path) -> None:
-    import pytest
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         TemporalConstraintRule(before=TemporalEventRef(event="a"))  # missing after
     with pytest.raises(ValidationError):
@@ -265,3 +265,116 @@ def test_temporal_constraint_shape_validated(tmp_path: Path) -> None:
             forbidden=TemporalEventRef(event="b"),
             after=TemporalEventRef(event="c"),
         )
+
+
+def test_root_scope_rejected_by_model() -> None:
+    with pytest.raises(ValidationError, match="root scope"):
+        InvariantRule(scope="/")
+    # normal scopes still pass
+    assert InvariantRule(scope="/orders").scope == "/orders"
+
+
+def test_root_scope_matcher_fails_closed() -> None:
+    """F1 defense in depth: even with validation bypassed, '/' matches all paths."""
+
+    from reprocase.graders.invariant import _is_within
+
+    assert _is_within("/orders/ORD-1", "/")
+    assert _is_within("/anything", "/")
+    assert not _is_within("/orders/ORD-1", "/orders/ORD-2")
+
+    # constructed bypassing validation: a change anywhere must be caught
+    rule = InvariantRule.model_construct(scope="/")
+    spec = InvariantGraderSpec.model_construct(
+        id="inv", type="invariant", rules=(rule,), critical=True
+    )
+    result = evaluate_invariant(
+        spec,
+        initial_document={"a": 1},
+        final_document={"a": 2},
+    )
+    assert result.status == GraderStatus.FAIL
+
+
+def test_absolute_allow_paths_rejected_by_model() -> None:
+    with pytest.raises(ValidationError, match="relative to the scope"):
+        InvariantRule(scope="/orders", allow_paths=("/orders/ORD-1",))
+    assert InvariantRule(scope="/orders", allow_paths=("ORD-1",)).allow_paths == ("ORD-1",)
+
+
+def test_absolute_allow_paths_normalized_as_defense() -> None:
+    """F2 defense in depth: a bypassed absolute entry still matches after normalization."""
+
+    from reprocase.graders.invariant import _join_scope
+
+    assert _join_scope("/orders", "/ORD-1") == "/orders/ORD-1"
+    assert _join_scope("/orders/", "ORD-1") == "/orders/ORD-1"
+
+    rule = InvariantRule.model_construct(scope="/orders", allow_paths=("/ORD-1",))
+    spec = InvariantGraderSpec.model_construct(
+        id="inv", type="invariant", rules=(rule,), critical=True
+    )
+    result = evaluate_invariant(
+        spec,
+        initial_document={"orders": {"ORD-1": {"status": "paid"}}},
+        final_document={"orders": {"ORD-1": {"status": "refunded"}}},
+    )
+    assert result.status == GraderStatus.PASS
+
+
+def test_validate_warns_when_fake_case_uses_stateful_graders(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from reprocase.cli import app
+
+    (tmp_path / "environment.yaml").write_text(
+        "api_version: reprocase.dev/environment/v0\ndriver: fake\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "case.yaml").write_text(
+        """\
+api_version: reprocase.dev/v0
+kind: EvalCase
+metadata:
+  id: fake.with.invariant
+  version: 0.1.0
+  title: Fake case with stateful grader
+task:
+  input: {}
+agent:
+  adapter: fake
+environment:
+  driver: fake
+  definition: environment.yaml
+graders:
+  - id: inv
+    type: invariant
+    rules:
+      - scope: /orders
+""",
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(app, ["validate", str(tmp_path / "case.yaml")])
+    assert result.exit_code == 0
+    assert "WARNING" in result.stdout
+    assert "inv" in result.stdout
+
+
+def test_temporal_malformed_entry_names_it() -> None:
+    spec = TemporalConstraintGraderSpec(
+        id="temp",
+        type="temporal_constraint",
+        constraints=(
+            TemporalConstraintRule(
+                before=TemporalEventRef(event="a"), after=TemporalEventRef(event="b")
+            ),
+        ),
+    )
+    result = evaluate_temporal_constraints(
+        spec,
+        final_document={"audit_log": [{"event": "a", "entity_id": "x"}]},
+    )
+    # engine-level: the malformed entry produces an ERROR whose message names it
+    assert result.status == GraderStatus.ERROR
+    assert "#0" in result.explanation
+    assert "sequence" in result.explanation

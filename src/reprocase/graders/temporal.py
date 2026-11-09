@@ -25,7 +25,9 @@ def _matches(entry: dict[str, Any], ref: TemporalEventRef) -> bool:
 
 
 def _sequences(log: list[dict[str, Any]], ref: TemporalEventRef) -> list[int]:
-    return [int(entry["sequence"]) for entry in log if _matches(entry, ref)]
+    # entries are pre-validated by the caller; a malformed one is a grader
+    # ERROR naming the entry, never an opaque KeyError
+    return [entry["sequence"] for entry in log if _matches(entry, ref)]
 
 
 def evaluate_temporal_constraints(
@@ -57,6 +59,19 @@ def evaluate_temporal_constraints(
             grader_digest=digest,
             duration_ms=max(0, (time.monotonic_ns() - started) // 1_000_000),
         )
+    for index, entry in enumerate(log):
+        if not isinstance(entry, dict) or not isinstance(entry.get("sequence"), int):
+            return GraderResult(
+                grader_id=spec.id,
+                status=GraderStatus.ERROR,
+                critical=spec.critical,
+                explanation=(
+                    f"audit_log entry #{index} lacks an integer 'sequence': {str(entry)[:200]}"
+                ),
+                grader_type="temporal_constraint",
+                grader_digest=digest,
+                duration_ms=max(0, (time.monotonic_ns() - started) // 1_000_000),
+            )
 
     assertions: list[AssertionResult] = []
     notes: list[str] = []

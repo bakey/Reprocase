@@ -155,6 +155,28 @@ class InvariantRule(StrictModel):
     operator: Literal["unchanged_except"] = "unchanged_except"
     allow_paths: tuple[str, ...] = ()
 
+    @field_validator("scope")
+    @classmethod
+    def scope_not_root(cls, value: str) -> str:
+        if value == "/":
+            raise ValueError(
+                "root scope '/' is meaningless for an invariant (it would assert the whole "
+                "document is unchanged); to assert no changes at all, assert an empty state "
+                "diff instead"
+            )
+        return value
+
+    @field_validator("allow_paths")
+    @classmethod
+    def allow_paths_relative(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for path in value:
+            if path.startswith("/"):
+                raise ValueError(
+                    f"allow_paths entries are relative to the scope: use "
+                    f"{path.lstrip('/')!r} relative to the scope, not the absolute {path!r}"
+                )
+        return value
+
 
 class InvariantGraderSpec(StrictModel):
     id: str = Field(min_length=1, max_length=128)

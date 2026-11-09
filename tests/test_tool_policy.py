@@ -118,7 +118,8 @@ def test_required_pass_and_fail() -> None:
         events=(_event(1, "tool.call.started", "order.get"),),
     )
     assert failing.status == GraderStatus.FAIL
-    assert failing.actual == {"completed": 0}
+    assert failing.actual == {"completed": 0, "last_attempt_sequence": None}
+    assert failing.evidence == ("events.jsonl#end",)
 
 
 def test_required_ignores_calls_that_only_started() -> None:
@@ -161,3 +162,33 @@ def test_no_progress_repeat_ignores_varied_calls() -> None:
         events=events,
     )
     assert result.warnings == ()
+
+
+def test_required_fail_points_at_last_attempt() -> None:
+    """F3: a required violation cites the last attempt that never completed."""
+
+    events = (
+        _event(3, "tool.call.started", "email.send", {"template": "refund_complete"}),
+        _event(5, "tool.call.started", "email.send", {"template": "refund_complete"}),
+        # neither completed
+    )
+    result = evaluate_tool_policy(
+        _spec(required=(ToolPolicyRequiredRule(tool="email.send"),)),
+        events=events,
+    )
+    assert result.status == GraderStatus.FAIL
+    assert result.actual == {"completed": 0, "last_attempt_sequence": 5}
+    assert result.evidence == ("events.jsonl#sequence=5",)
+    assert "last attempt at event #5" in result.explanation
+
+
+def test_required_fail_never_attempted_points_at_stream_end() -> None:
+    events = (_event(3, "tool.call.started", "order.get", {"order_id": "O"}),)
+    result = evaluate_tool_policy(
+        _spec(required=(ToolPolicyRequiredRule(tool="email.send"),)),
+        events=events,
+    )
+    assert result.status == GraderStatus.FAIL
+    assert result.actual == {"completed": 0, "last_attempt_sequence": None}
+    assert result.evidence == ("events.jsonl#end",)
+    assert "never attempted" in result.explanation

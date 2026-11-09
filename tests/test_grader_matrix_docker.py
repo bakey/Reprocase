@@ -361,6 +361,8 @@ def test_tool_policy_fail_missing_required(tmp_path: Path) -> None:
     assert graded.status == GraderStatus.FAIL
     failed = [a for a in graded.assertions if a.status == GraderStatus.FAIL]
     assert any(a.operator == "required" and "email.send" in a.path for a in failed)
+    # F3: a required violation still carries evidence (stream end when never attempted)
+    assert graded.evidence
     assert residual_resources() == []
 
 

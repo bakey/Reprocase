@@ -43,6 +43,7 @@ def evaluate_tool_policy(
 
     assertions: list[AssertionResult] = []
     warnings: list[str] = []
+    required_evidence: list[Any] = []
 
     for rule in spec.policy.forbidden:
         matches = [
@@ -89,13 +90,14 @@ def evaluate_tool_policy(
         started_by_tool: dict[str, list[dict[str, Any]]] = {}
         for event in started_events:
             started_by_tool.setdefault(str(event["payload"].get("tool")), []).append(event)
+        tool_attempts = started_by_tool.get(required_rule.tool, [])
         required_matches: list[dict[str, Any]] = []
         for event in completed_events:
             if event["payload"].get("tool") != required_rule.tool:
                 continue
             prior = [
                 started
-                for started in started_by_tool.get(required_rule.tool, [])
+                for started in tool_attempts
                 if int(started["sequence"]) < int(event["sequence"])
             ]
             arguments = prior[-1]["payload"].get("arguments", {}) if prior else {}
@@ -116,16 +118,33 @@ def evaluate_tool_policy(
                 )
             )
         else:
+            # F3: point at the last attempt of the tool (which never completed),
+            # or at the end of the event stream when the tool was never called
+            if tool_attempts:
+                last_seq = tool_attempts[-1].get("sequence")
+                required_actual: dict[str, Any] = {
+                    "completed": 0,
+                    "last_attempt_sequence": last_seq,
+                }
+                evidence_ref: Any = f"events.jsonl#sequence={last_seq}"
+                detail = f"last attempt at event #{last_seq} never completed"
+            else:
+                required_actual = {"completed": 0, "last_attempt_sequence": None}
+                evidence_ref = "events.jsonl#end"
+                detail = "never attempted"
             assertions.append(
                 AssertionResult(
                     path=f"required/{required_rule.tool}",
                     operator="required",
                     status=GraderStatus.FAIL,
                     expected={"tool": required_rule.tool, "args_match": required_rule.args_match},
-                    actual={"completed": 0},
-                    explanation=(f"{required_rule.tool} never completed with matching arguments"),
+                    actual=required_actual,
+                    explanation=(
+                        f"{required_rule.tool} never completed with matching arguments ({detail})"
+                    ),
                 )
             )
+            required_evidence.append(evidence_ref)
 
     for pattern in spec.policy.patterns:
         repeat_rule = pattern.no_progress_repeat
@@ -157,6 +176,7 @@ def evaluate_tool_policy(
         seq = assertion.actual.get("first_violation_sequence")
         if seq is not None:
             evidence.append(f"events.jsonl#sequence={seq}")
+    evidence.extend(required_evidence)
     if failures:
         first_failure = failures[0]
         explanation = first_failure.explanation
