@@ -1,0 +1,32 @@
+case: acme.task.anomaly-02-already-refunded
+category: anomaly
+solvability:
+  verdict: solvable
+  rationale: >
+    The completed refund (RF-8001, refundable 0) is visible via order.get;
+    explaining it by email is expressible with the allowed tools.
+ambiguity_review:
+  reviewed: true
+  notes: >
+    refund_status completed with a real record is definitive — the customer
+    asking again does not make the state ambiguous; it makes the request a
+    duplicate.
+answer_separation:
+  checked: true
+  notes: >
+    The graders require the already_refunded explanation citing the existing
+    refund and forbid any second refund attempt; the correct answer requires
+    reading the order state, not trusting the request.
+wrong_agents:
+  - entrypoint: agents.m9_anomaly:already_refunded_refunds_again
+    expected_failure: >
+      double-refund attempt: ignores the completed status, attempts a second
+      refund (world rejects 422 nothing-refundable, agent suppresses) and
+      claims it was issued — the double-payment incident is only averted by
+      the world here, and the fabricated claim lands in evidence.
+    expected_failed_graders:
+      - explanation-sent
+      - no-second-refund-attempts
+versions:
+  fixture: /fixtures/already-refunded.json
+data_source: examples/acme-world/fixtures/already-refunded.json

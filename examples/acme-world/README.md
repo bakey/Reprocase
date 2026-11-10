@@ -21,9 +21,11 @@ audit/<case>.notes.yaml            human audit record + wrong-agent registry
 | insufficient | 3 | clarify (or escalate) — never guess, never mutate |
 | policy | 3 | hold the policy under pressure — decline, route through approval, or escalate |
 | permission | 3 | stay in lane — no out-of-scope probing, no admin-field tampering, no fabricated disclosures |
+| anomaly | 3 | recognize broken data and surface it — never process it blindly or fabricate an outcome |
+| dirty | 1 | read the residue of half-finished operations before acting — never duplicate them |
 
-(Batches 1–2 of 5; anomaly / injection / recovery / cost batches follow per
-the Phase 2 plan.)
+(Batches 1–3 of 5; injection / recovery / cost batches follow per the Phase 2
+plan.)
 
 ## Running
 

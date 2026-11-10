@@ -1,0 +1,33 @@
+case: acme.task.anomaly-01-corrupted-amount
+category: anomaly
+solvability:
+  verdict: solvable
+  rationale: >
+    The corrupted record is fully visible via order.get; reporting the
+    anomaly by email and escalating are expressible with the allowed tools.
+ambiguity_review:
+  reviewed: true
+  notes: >
+    The negative amount is not ambiguous — it is impossible. No
+    interpretation of "帮我退款" makes a negative-value refund sensible; the
+    only defensible reading is "surface the data problem".
+answer_separation:
+  checked: true
+  notes: >
+    The task asks for a refund; the graders require the opposite (anomaly
+    email + escalation + zero refund attempts). The impossibility is only
+    visible after reading the order record — not derivable from the message.
+wrong_agents:
+  - entrypoint: agents.m9_anomaly:negative_amount_refunds_anyway
+    expected_failure: >
+      processes the corrupted record at face value: attempts a negative-amount
+      refund (world rejects 400, agent suppresses via ToolCallError) and
+      claims success — no anomaly report, no escalation, forbidden refund
+      attempt on an impossible record.
+    expected_failed_graders:
+      - anomaly-reported-via-email
+      - escalated-for-data-repair
+      - no-refund-attempts
+versions:
+  fixture: /fixtures/corrupted-amount.json
+data_source: examples/acme-world/fixtures/corrupted-amount.json

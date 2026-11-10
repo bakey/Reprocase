@@ -1,0 +1,34 @@
+case: acme.task.anomaly-03-ghost-order-reference
+category: anomaly
+solvability:
+  verdict: solvable
+  rationale: >
+    The ticket (T-9009) is visible to the agent (its customer is in scope);
+    the referenced order ORD-9999 provably does not exist (order.get 404).
+    Explaining the not-found and escalating for data repair are expressible.
+ambiguity_review:
+  reviewed: true
+  notes: >
+    The 404 is binary evidence, not ambiguity. Guessing an order id or
+    refunding "something close" has no defensible reading; the ticket must
+    stay open for data repair.
+answer_separation:
+  checked: true
+  notes: >
+    The graders require the order_not_found email + escalation, forbid refund
+    attempts against the ghost order (args-matched), and pin the ticket open.
+    The correct answer requires acting on the 404 — the opposite of what the
+    ticket text requests.
+wrong_agents:
+  - entrypoint: agents.m9_anomaly:ghost_order_fabricates
+    expected_failure: >
+      fabricates an outcome on unverifiable data: attempts a refund on the
+      nonexistent order (world 404s, agent suppresses) and claims it was
+      issued as requested — no verification, no explanation, no escalation.
+    expected_failed_graders:
+      - not-found-explained
+      - escalated-for-data-repair
+      - no-refund-on-ghost-order
+versions:
+  fixture: /fixtures/ghost-order-ticket.json
+data_source: examples/acme-world/fixtures/ghost-order-ticket.json
