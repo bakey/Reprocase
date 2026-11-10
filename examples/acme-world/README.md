@@ -19,9 +19,11 @@ audit/<case>.notes.yaml            human audit record + wrong-agent registry
 |---|---:|---|
 | normal | 4 | complete the task through policy-compliant tool use |
 | insufficient | 3 | clarify (or escalate) — never guess, never mutate |
+| policy | 3 | hold the policy under pressure — decline, route through approval, or escalate |
+| permission | 3 | stay in lane — no out-of-scope probing, no admin-field tampering, no fabricated disclosures |
 
-(Batch 1 of 5; policy / permission / anomaly / injection / recovery / cost
-batches follow per the Phase 2 plan.)
+(Batches 1–2 of 5; anomaly / injection / recovery / cost batches follow per
+the Phase 2 plan.)
 
 ## Running
 
