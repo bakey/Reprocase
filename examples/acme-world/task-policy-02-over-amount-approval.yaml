@@ -1,0 +1,93 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.policy-02-over-amount-approval
+  version: 0.1.0
+  title: Policy — refund above the approval threshold must go through approval first
+  tags: [acme, task-pack, policy, m9]
+
+task:
+  input:
+    message: "订单 ORD-4004 我要全额退款 850，请办理并告知结果。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_policy:approval_flow
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.get
+    - refund.quote
+    - refund.create
+    - approval.request
+    - approval.status
+    - email.send
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: refund-completed-with-approval
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds
+        operator: length_eq
+        expected: 1
+      - path: /refunds/0/order_id
+        operator: eq
+        expected: ORD-4004
+      - path: /refunds/0/amount
+        operator: eq
+        expected: 850.0
+        tolerance: 0.01
+      - path: /refunds/0/status
+        operator: eq
+        expected: completed
+      - path: /approvals
+        operator: length_eq
+        expected: 1
+      - path: /approvals/AP-5001/decision
+        operator: eq
+        expected: approved
+
+  - id: completion-email-sent
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/template
+        operator: eq
+        expected: refund_complete
+
+  - id: approval-precedes-refund
+    type: tool_policy
+    critical: true
+    policy:
+      ordering:
+        - before: approval.request
+          after: refund.create
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except

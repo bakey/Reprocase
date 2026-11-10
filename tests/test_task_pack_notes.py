@@ -61,6 +61,15 @@ def test_case_has_complete_audit_note(case_path: Path) -> None:
     wrong = note["wrong_agents"]
     assert wrong, "at least one wrong agent is mandatory (distinct failure causes)"
     assert all("entrypoint" in entry and "expected_failure" in entry for entry in wrong)
+    # the failure mechanism must be pinned: which graders the wrong agent trips,
+    # so the audit matrix can assert it (executable constraint, not prose)
+    for entry in wrong:
+        declared = entry.get("expected_failed_graders")
+        assert (
+            isinstance(declared, list)
+            and declared
+            and all(isinstance(grader, str) for grader in declared)
+        ), f"{case_path.name}: {entry.get('entrypoint')} needs expected_failed_graders"
 
 
 @pytest.mark.parametrize("case_path", CASES, ids=lambda path: path.name)

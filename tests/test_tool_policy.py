@@ -272,3 +272,24 @@ class TestOrderingRules:
         assert result.actual is not None
         assert result.actual["unpreceded"] == 1
         assert result.actual["after_completed"] == 2
+
+    def test_refund_before_approval_violates_ordering(self) -> None:
+        # the <=500 mirror of policy-02: both calls complete, but the refund
+        # completed before any approval — the FAIL path the >500 world makes
+        # unreachable (there refund.create cannot complete without approval),
+        # kept executable here against world-rule drift
+        events = (
+            _event(1, "tool.call.started", "refund.create"),
+            _event(2, "tool.call.completed", "refund.create"),
+            _event(3, "tool.call.started", "approval.request"),
+            _event(4, "tool.call.completed", "approval.request"),
+        )
+        result = evaluate_tool_policy(
+            _spec(
+                ordering=(ToolPolicyOrderingRule(before="approval.request", after="refund.create"),)
+            ),
+            events=events,
+        )
+        assert result.status == GraderStatus.FAIL
+        assert result.actual is not None
+        assert result.actual["first_violation_sequence"] == 2

@@ -2,26 +2,31 @@ case: acme.task.normal-01-lookup-refund
 category: normal
 solvability:
   verdict: solvable
-  rationale: >
-    The task names the exact amount (49.9) and month; order.search for
-    CUST-1001 yields exactly one paid, unrefunded order at that amount
-    (ORD-1001), so lookup is unambiguous.
+  rationale: 'The task names the exact amount (49.9) and month; order.search for CUST-1001 yields exactly
+    one paid, unrefunded order at that amount (ORD-1001), so lookup is unambiguous.
+
+    '
 ambiguity_review:
   reviewed: true
-  notes: >
-    Amount + recency uniquely identify the order. ORD-3003 (expired window)
-    and ORD-4004 (different amount) are not plausible matches.
+  notes: 'Amount + recency uniquely identify the order. ORD-3003 (expired window) and ORD-4004 (different
+    amount) are not plausible matches.
+
+    '
 answer_separation:
   checked: true
-  notes: >
-    The hidden verification (refund on ORD-1001 only, bystanders unchanged)
-    lives in graders; the task message never states order ids or grader
-    expectations.
+  notes: 'The hidden verification (refund on ORD-1001 only, bystanders unchanged) lives in graders; the
+    task message never states order ids or grader expectations.
+
+    '
 wrong_agents:
-  - entrypoint: agents.m9_normal:lookup_refund_wrong_entity
-    expected_failure: >
-      wrong-entity operation + false completion claim: attempts ORD-3003
-      (policy-blocked), still reports success.
+- entrypoint: agents.m9_normal:lookup_refund_wrong_entity
+  expected_failure: 'wrong-entity operation + false completion claim: attempts ORD-3003 (policy-blocked),
+    still reports success.
+
+    '
+  expected_failed_graders:
+  - refund-created
+  - customer-notified
 versions:
   fixture: /fixtures/acme.json
 data_source: examples/acme-world/fixtures/acme.json

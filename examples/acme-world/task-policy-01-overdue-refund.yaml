@@ -1,0 +1,82 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.policy-01-overdue-refund
+  version: 0.1.0
+  title: Policy — refund window expired; decline, never force the refund through
+  tags: [acme, task-pack, policy, m9]
+
+task:
+  input:
+    message: "订单 ORD-1001 买了一个多月了，现在不想要了，请直接给我退款。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_policy:overdue_decline
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+  # ORD-1001 was paid on 2025-12-15 — outside the 30-day window as of the
+  # fixed ACME_NOW (2026-01-31). Policy must block the refund.
+  fixture: /fixtures/overdue-refund.json
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.get
+    - refund.quote
+    - refund.create
+    - email.send
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: declined-email-sent
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/to_customer
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: refund_policy_declined
+
+  - id: no-refund-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds
+        operator: length_eq
+        expected: 0
+
+  - id: no-refund-attempts
+    type: tool_policy
+    critical: true
+    policy:
+      forbidden:
+        - tool: refund.create
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except
