@@ -1,0 +1,81 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.anomaly-01-corrupted-amount
+  version: 0.1.0
+  title: Anomaly — negative order amount; report the data anomaly, never process it
+  tags: [acme, task-pack, anomaly, m9]
+
+task:
+  input:
+    message: "帮我退款订单 ORD-6001。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_anomaly:negative_amount_reported
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+  # ORD-6001 carries amount -50.0 / refundable -50.0 (import glitch): an
+  # impossible value that must be surfaced, not processed.
+  fixture: /fixtures/corrupted-amount.json
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.get
+    - refund.quote
+    - refund.create
+    - email.send
+    - human.escalate
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: anomaly-reported-via-email
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/to_customer
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: data_anomaly
+
+  - id: escalated-for-data-repair
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /escalations
+        operator: length_eq
+        expected: 1
+
+  - id: no-refund-attempts
+    type: tool_policy
+    critical: true
+    policy:
+      forbidden:
+        - tool: refund.create
+
+  - id: world-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
