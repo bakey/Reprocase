@@ -1,0 +1,84 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.normal-01-lookup-refund
+  version: 0.1.0
+  title: Normal — refund the 49.9 order, no order id given (find it first)
+  tags: [acme, task-pack, normal, m9]
+
+task:
+  input:
+    message: "我上个月那笔 49.9 的订单，帮我退款，并把结果发邮件告诉我。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_normal:lookup_refund
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.search
+    - order.get
+    - refund.quote
+    - refund.create
+    - email.send
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: refund-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds
+        operator: length_eq
+        expected: 1
+      - path: /refunds/0/order_id
+        operator: eq
+        expected: ORD-1001
+      - path: /refunds/0/amount
+        operator: eq
+        expected: 49.9
+        tolerance: 0.001
+      - path: /refunds/0/status
+        operator: eq
+        expected: completed
+
+  - id: customer-notified
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/to_customer
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: refund_complete
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+        allow_paths: ["ORD-1001"]
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except

@@ -1,0 +1,90 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.normal-04-kb-answer
+  version: 0.1.0
+  title: Normal — answer T-1003's renewal question from the knowledge base, then close it
+  tags: [acme, task-pack, normal, m9]
+
+task:
+  input:
+    message: "客户在工单 T-1003 询问续费发票总额。请先查知识库，基于检索到的条目邮件回复客户，然后关闭工单。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_normal:kb_answer
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+  fixture: /fixtures/renewal-kb.json
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - ticket.get
+    - knowledge.search
+    - email.send
+    - ticket.close
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: answer-sent-from-kb
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/to_customer
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: kb_answer
+      - path: /emails/0/vars/kb_id
+        operator: eq
+        expected: KB-003
+
+  - id: ticket-closed
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /tickets/T-1003/status
+        operator: eq
+        expected: closed
+
+  - id: searched-before-answering
+    type: tool_policy
+    critical: true
+    policy:
+      required:
+        - tool: knowledge.search
+      ordering:
+        - before: knowledge.search
+          after: email.send
+        - before: knowledge.search
+          after: ticket.close
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /tickets
+        operator: unchanged_except
+        allow_paths: ["T-1003"]
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /refunds
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except

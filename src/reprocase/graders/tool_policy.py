@@ -2,9 +2,11 @@
 
 Data source: ``tool.call.started`` events for forbidden/occurrence rules (a
 call that started is a real attempt), ``tool.call.completed`` for required
-rules (the call must have succeeded). ``args_match`` supports exact values and
-the ``"*"`` wildcard. ``patterns.no_progress_repeat`` is warning-level: it is
-recorded on PASS trajectories too and never changes the verdict.
+and ordering rules (the call must have succeeded). ``args_match`` supports
+exact values and the ``"*"`` wildcard. ``ordering`` rules require every
+completed ``after`` call to be preceded by a completed ``before`` call.
+``patterns.no_progress_repeat`` is warning-level: it is recorded on PASS
+trajectories too and never changes the verdict.
 """
 
 from __future__ import annotations
@@ -145,6 +147,71 @@ def evaluate_tool_policy(
                 )
             )
             required_evidence.append(evidence_ref)
+
+    for order_rule in spec.policy.ordering:
+        before_sequences = [
+            int(event["sequence"])
+            for event in completed_events
+            if event["payload"].get("tool") == order_rule.before
+        ]
+        after_occurrences = [
+            event for event in completed_events if event["payload"].get("tool") == order_rule.after
+        ]
+        path = f"ordering/{order_rule.before}->{order_rule.after}"
+        if not after_occurrences:
+            # the anchored obligation never arose: vacuous pass (documented
+            # semantics, mirroring temporal_constraint)
+            assertions.append(
+                AssertionResult(
+                    path=path,
+                    operator="ordering",
+                    status=GraderStatus.PASS,
+                    expected={"before": order_rule.before, "after": order_rule.after},
+                    actual={"after_completed": 0},
+                    explanation=(
+                        f"{order_rule.after} never completed; ordering obligation "
+                        f"did not arise (vacuous pass)"
+                    ),
+                )
+            )
+            continue
+        violations = [
+            event
+            for event in after_occurrences
+            if not any(seq < int(event["sequence"]) for seq in before_sequences)
+        ]
+        if violations:
+            first = violations[0]
+            assertions.append(
+                AssertionResult(
+                    path=path,
+                    operator="ordering",
+                    status=GraderStatus.FAIL,
+                    expected={"before": order_rule.before, "after": order_rule.after},
+                    actual={
+                        "after_completed": len(after_occurrences),
+                        "unpreceded": len(violations),
+                        "first_violation_sequence": first.get("sequence"),
+                    },
+                    explanation=(
+                        f"{order_rule.after} completed at event #{first.get('sequence')} "
+                        f"without a preceding {order_rule.before} completion"
+                    ),
+                )
+            )
+        else:
+            assertions.append(
+                AssertionResult(
+                    path=path,
+                    operator="ordering",
+                    status=GraderStatus.PASS,
+                    expected={"before": order_rule.before, "after": order_rule.after},
+                    actual={"after_completed": len(after_occurrences)},
+                    explanation=(
+                        f"every {order_rule.after} completion is preceded by {order_rule.before}"
+                    ),
+                )
+            )
 
     for pattern in spec.policy.patterns:
         repeat_rule = pattern.no_progress_repeat

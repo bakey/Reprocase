@@ -225,6 +225,15 @@ class ToolPolicyRequiredRule(StrictModel):
     args_match: dict[str, Any] = Field(default_factory=dict)
 
 
+class ToolPolicyOrderingRule(StrictModel):
+    """Every completed ``after`` call must be preceded by a completed
+    ``before`` call (strictly smaller event sequence). Vacuous pass when the
+    ``after`` tool never completed — the obligation never arose."""
+
+    before: str = Field(min_length=1, max_length=128)
+    after: str = Field(min_length=1, max_length=128)
+
+
 class NoProgressRepeatRule(StrictModel):
     max_identical_calls: Annotated[int, Field(ge=2)] = 3
     severity: Literal["warning"] = "warning"
@@ -237,6 +246,7 @@ class ToolPolicyPattern(StrictModel):
 class ToolPolicySpec(StrictModel):
     forbidden: tuple[ToolPolicyForbiddenRule, ...] = ()
     required: tuple[ToolPolicyRequiredRule, ...] = ()
+    ordering: tuple[ToolPolicyOrderingRule, ...] = ()
     patterns: tuple[ToolPolicyPattern, ...] = ()
 
 

@@ -1,0 +1,69 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.normal-03-callback-scheduling
+  version: 0.1.0
+  title: Normal — schedule a callback window for Ada on 2026-02-03 10:00–10:30
+  tags: [acme, task-pack, normal, m9]
+
+task:
+  input:
+    message: "请为 Ada（CUST-1001）安排 2026-02-03 10:00–10:30 的电话回访，主题写「Callback: Ada Example」。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_normal:callback_scheduling
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - calendar.create
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: event-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /calendar
+        operator: length_eq
+        expected: 1
+      - path: /calendar/0/owner
+        operator: eq
+        expected: CUST-1001
+      - path: /calendar/0/title
+        operator: eq
+        expected: "Callback: Ada Example"
+      - path: /calendar/0/start
+        operator: eq
+        expected: "2026-02-03T10:00"
+      - path: /calendar/0/end
+        operator: eq
+        expected: "2026-02-03T10:30"
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /emails
+        operator: unchanged_except
+      - scope: /refunds
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except
