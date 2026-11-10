@@ -1,5 +1,89 @@
 {
   "$defs": {
+    "AgentIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "title": "Adapter",
+          "type": "string"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "entrypoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint"
+        },
+        "entrypoint_override": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint Override"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "provider_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "adapter"
+      ],
+      "title": "AgentIdentity",
+      "type": "object"
+    },
     "ArtifactRef": {
       "additionalProperties": false,
       "properties": {
@@ -107,6 +191,26 @@
       "title": "CaseIdentity",
       "type": "object"
     },
+    "CodeIdentity": {
+      "additionalProperties": false,
+      "description": "Digest of the code behind an entrypoint (relative paths only, §6.2).",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "title": "CodeIdentity",
+      "type": "object"
+    },
     "FailureAttribution": {
       "enum": [
         "CASE_ERROR",
@@ -125,6 +229,7 @@
         "CASE_REFERENCE_OUTSIDE_ROOT",
         "CASE_UNSUPPORTED_DRIVER",
         "CASE_ENTRYPOINT_INVALID",
+        "CASE_AGENT_PREFLIGHT_FAILED",
         "ENV_FAKE_START_FAILED",
         "ENV_FAKE_HEALTHCHECK_FAILED",
         "ENV_COMPOSE_UNSAFE",
@@ -440,6 +545,17 @@
   },
   "additionalProperties": false,
   "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "agent_output": {
       "default": null,
       "title": "Agent Output"

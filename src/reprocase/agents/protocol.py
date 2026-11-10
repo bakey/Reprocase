@@ -28,6 +28,9 @@ class AgentResult:
     output: Any
     summary: str | None = None
     usage: Usage | None = None
+    # Model identifier for LLM-backed agents (M8): recorded in AgentIdentity
+    # so evidence bundles name the brain behind the trajectory.
+    model: str | None = None
 
 
 class AgentAdapter(Protocol):

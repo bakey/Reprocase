@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -32,11 +33,23 @@ class EventEnvelope(BaseModel):
 
 
 class EventRecorder:
-    """Thread-safe, append-only JSONL recorder with durable writes."""
+    """Thread-safe, append-only JSONL recorder with durable writes.
 
-    def __init__(self, path: Path, run_id: str) -> None:
+    ``payload_scrubber`` is an optional payload -> payload filter (e.g.
+    scrubbing concrete secret values such as LLM API keys); injected by the
+    caller to avoid a dependency cycle with the redaction module.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        run_id: str,
+        *,
+        payload_scrubber: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
         self.path = path
         self.run_id = run_id
+        self.payload_scrubber = payload_scrubber
         self._sequence = 0
         self._lock = threading.Lock()
         self.path.touch(mode=0o600, exist_ok=False)
@@ -51,12 +64,15 @@ class EventRecorder:
     ) -> EventEnvelope:
         with self._lock:
             self._sequence += 1
+            scrubbed = payload or {}
+            if self.payload_scrubber is not None:
+                scrubbed = self.payload_scrubber(scrubbed)
             event = EventEnvelope(
                 run_id=self.run_id,
                 sequence=self._sequence,
                 type=event_type,
                 source=source,
-                payload=payload or {},
+                payload=scrubbed,
                 attributes=attributes or {},
             )
             try:

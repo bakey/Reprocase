@@ -84,6 +84,10 @@ class AgentIdentity(StrictOutputModel):
     code: CodeIdentity | None = None
     provider: str | None = None
     provider_code: CodeIdentity | None = None
+    # Observed model identifier for LLM-backed agents (M8). The manifest is
+    # written before the run, so it records the declared identity with a null
+    # model; the run result carries the model actually observed.
+    model: str | None = None
 
 
 class Usage(StrictOutputModel):
@@ -184,6 +188,7 @@ class RunResult(StrictOutputModel):
     finished_at: datetime
     duration_ms: int = Field(ge=0)
     reproducibility_level: Literal["R0", "R1"] = "R0"
+    agent: AgentIdentity | None = None
     agent_output: Any = None
     usage: Usage | None = None
     states: tuple[StateSnapshot, ...] = ()

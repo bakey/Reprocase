@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +65,7 @@ from reprocase.runner.fakes import FakeAgent, FakeEnvironment, FakeGrader
 from reprocase.runner.scripted import ActorContext, load_actor
 from reprocase.runner.state_machine import RunStateMachine
 from reprocase.tools.broker import ToolBroker
-from reprocase.tools.redaction import redact
+from reprocase.tools.redaction import redact, scrub_secrets
 from reprocase.tools.registry import ToolRegistry
 from reprocase.tools.validation import validate_tools
 from reprocase.vcs import git_identity
@@ -150,12 +151,25 @@ def _run_loop(coro: Coroutine[Any, Any, None]) -> None:
             loop.remove_signal_handler(signal.SIGINT)
 
 
+def _env_secret_values() -> tuple[str, ...]:
+    """Concrete secret values (e.g. LLM API keys) scrubbed from every event
+    payload and the persisted agent output — key-based redaction cannot catch
+    a secret echoed into free text by a model."""
+
+    return tuple(
+        value
+        for name, value in os.environ.items()
+        if name.startswith("REPROCASE_") and name.endswith("_API_KEY") and value
+    )
+
+
 class _RunDraft:
     def __init__(self) -> None:
         self.failures: list[FailureRecord] = []
         self.graders: list[GraderResult] = []
         self.agent_output: Any = None
         self.agent_error: str | None = None
+        self.observed_model: str | None = None
         self.usage: Usage | None = None
         self.states: list[StateSnapshot] = []
         self.state_diff_ref: ArtifactRef | None = None
@@ -527,6 +541,7 @@ async def _run_python_agent(
                     agent_result = agent_task.result()
                     draft.agent_output = agent_result.output
                     model_usage = agent_result.usage
+                    draft.observed_model = agent_result.model
                     recorder.emit(
                         "agent.completed",
                         source="python_agent",
@@ -933,6 +948,32 @@ async def _execute_compose(
                     raise asyncio.CancelledError  # preserve the user's cancellation state
 
 
+def _preflight_agent(entrypoint: str, import_root: Path) -> None:
+    """Run the agent module's optional ``preflight()`` before provisioning.
+
+    Agents backed by external services (e.g. the M8 LLM agent) declare their
+    runtime prerequisites this way. Failing here — before any environment is
+    started — keeps a misconfigured run a CASE error (INVALID), never an
+    agent capability failure, and avoids paying for provisioning.
+    """
+
+    module_name = entrypoint.partition(":")[0]
+    try:
+        preflight = load_callable(f"{module_name}:preflight", import_root)
+    except ReprocaseError:
+        return  # the module declares no preflight; nothing to check
+    try:
+        preflight()
+    except ReprocaseError:
+        raise
+    except Exception as exc:
+        raise CaseValidationError(
+            f"agent preflight failed for module {module_name!r}: {exc}",
+            code=FailureCode.CASE_AGENT_PREFLIGHT_FAILED,
+            details={"module": module_name, "error": str(exc)},
+        ) from exc
+
+
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
     """Return the effective agent entrypoint, or None for the fake flow."""
 
@@ -1035,7 +1076,12 @@ def run_case(
             ),
         )
     storage.write_manifest(manifest)
-    recorder = EventRecorder(storage.events_path, run_id)
+    secret_values = _env_secret_values()
+    recorder = EventRecorder(
+        storage.events_path,
+        run_id,
+        payload_scrubber=partial(scrub_secrets, secrets=secret_values),
+    )
     session = _RunSession(recorder)
     started_at = datetime.now(UTC)
     monotonic_started = time.monotonic_ns()
@@ -1054,11 +1100,14 @@ def run_case(
         if is_fake:
             _execute_fake(session, loaded, draft)
         else:
+            assert entrypoint is not None
+            # runtime prerequisites fail before provisioning: a missing LLM
+            # configuration is a CASE error (INVALID), never an agent failure
+            _preflight_agent(entrypoint, loaded.environment_path.parent)
             assert isinstance(loaded.environment, ComposeEnvironmentDefinition)
             compose_file = loaded.compose_path or resolve_compose_file(
                 loaded.environment, loaded.environment_path.parent
             )
-            assert entrypoint is not None
             _run_loop(
                 _execute_compose(
                     session,
@@ -1151,8 +1200,13 @@ def run_case(
         finished_at=finished_at,
         duration_ms=max(0, (time.monotonic_ns() - monotonic_started) // 1_000_000),
         reproducibility_level="R0" if is_fake else "R1",
-        # field-level redaction also applies to the persisted result (§17.1)
-        agent_output=redact(draft.agent_output, extra_keys=loaded.case.output.redaction.keys),
+        agent=agent_identity.model_copy(update={"model": draft.observed_model}),
+        # field-level redaction also applies to the persisted result (§17.1);
+        # secret-value scrubbing catches keys echoed into free text (M8)
+        agent_output=scrub_secrets(
+            redact(draft.agent_output, extra_keys=loaded.case.output.redaction.keys),
+            secret_values,
+        ),
         usage=draft.usage,
         states=tuple(draft.states),
         state_diff=draft.state_diff_ref,
