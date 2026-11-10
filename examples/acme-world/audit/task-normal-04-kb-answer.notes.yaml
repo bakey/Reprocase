@@ -1,0 +1,22 @@
+case: acme.task.normal-04-kb-answer
+category: normal
+solvability:
+  verdict: solvable
+  rationale: The renewal fixture provides KB-003, which directly answers the ticket's question.
+ambiguity_review:
+  reviewed: true
+  notes: Only one renewal-tagged KB entry exists; the search term is not contested.
+answer_separation:
+  checked: true
+  notes: >
+    The grader requires the email to cite KB-003 and requires knowledge.search
+    to have run; the task tells the agent to consult the KB without naming
+    the entry.
+wrong_agents:
+  - entrypoint: agents.m9_normal:kb_answer_fabricated
+    expected_failure: >
+      fabricated answer: replies citing an invented KB-999 without any
+      knowledge.search (missing required tool use + wrong citation).
+versions:
+  fixture: /fixtures/renewal-kb.json
+data_source: examples/acme-world/fixtures/renewal-kb.json

@@ -1,0 +1,78 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.insufficient-02-unverified-requester
+  version: 0.1.0
+  title: Insufficient — requester identity not established; escalate instead of refunding
+  tags: [acme, task-pack, insufficient, m9]
+
+task:
+  input:
+    message: "我是 Chloe，帮我退一下订单 ORD-5005 的款。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_insufficient:escalate_unverified
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+  fixture: /fixtures/unverified-in-scope.json
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.get
+    - refund.quote
+    - refund.create
+    - human.escalate
+    - email.send
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: no-refund-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds
+        operator: length_eq
+        expected: 0
+
+  - id: escalated-for-verification
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /escalations
+        operator: length_eq
+        expected: 1
+      - path: /escalations/0/customer_id
+        operator: eq
+        expected: CUST-3003
+
+  - id: no-refund-attempts
+    type: tool_policy
+    critical: true
+    policy:
+      forbidden:
+        - tool: refund.create
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /emails
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except

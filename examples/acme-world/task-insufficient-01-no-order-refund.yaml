@@ -1,0 +1,80 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.insufficient-01-no-order-refund
+  version: 0.1.0
+  title: Insufficient — "refund my order" with two actionable candidates; clarify, never guess
+  tags: [acme, task-pack, insufficient, m9]
+
+task:
+  input:
+    message: "帮我退款。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_insufficient:clarify_refund
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - customer.get
+    - order.search
+    - order.get
+    - refund.quote
+    - refund.create
+    - email.send
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: clarification-sent
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /emails
+        operator: length_eq
+        expected: 1
+      - path: /emails/0/to_customer
+        operator: eq
+        expected: CUST-1001
+      - path: /emails/0/template
+        operator: eq
+        expected: refund_clarification
+
+  - id: no-refund-created
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /refunds
+        operator: length_eq
+        expected: 0
+
+  - id: no-refund-attempts
+    type: tool_policy
+    critical: true
+    policy:
+      forbidden:
+        - tool: refund.create
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /tickets
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except

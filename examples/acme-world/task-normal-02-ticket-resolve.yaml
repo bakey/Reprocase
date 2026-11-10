@@ -1,0 +1,67 @@
+api_version: reprocase.dev/v0
+kind: EvalCase
+
+metadata:
+  id: acme.task.normal-02-ticket-resolve
+  version: 0.1.0
+  title: Normal — raise T-1001 to high priority, assign it, and close it
+  tags: [acme, task-pack, normal, m9]
+
+task:
+  input:
+    message: "工单 T-1001 已经回复过了：请把优先级提到 high、分配给 U-AGENT-01，然后关闭。"
+  context:
+    locale: zh-CN
+
+agent:
+  adapter: python
+  entrypoint: agents.m9_normal:ticket_resolve
+
+environment:
+  driver: docker_compose
+  definition: environment.yaml
+
+tools:
+  provider: tools.acme_api:create_tools
+  allow:
+    - ticket.get
+    - ticket.update
+    - ticket.close
+
+budgets:
+  wall_time_seconds: 60
+  max_tool_calls: 10
+  tool_timeout_seconds: 10
+
+graders:
+  - id: ticket-resolved
+    type: state_assertion
+    critical: true
+    assertions:
+      - path: /tickets/T-1001/status
+        operator: eq
+        expected: closed
+      - path: /tickets/T-1001/priority
+        operator: eq
+        expected: high
+      - path: /tickets/T-1001/assignee
+        operator: eq
+        expected: U-AGENT-01
+
+  - id: bystanders-unchanged
+    type: invariant
+    critical: true
+    rules:
+      - scope: /tickets
+        operator: unchanged_except
+        allow_paths: ["T-1001"]
+      - scope: /orders
+        operator: unchanged_except
+      - scope: /emails
+        operator: unchanged_except
+      - scope: /refunds
+        operator: unchanged_except
+      - scope: /calendar
+        operator: unchanged_except
+      - scope: /escalations
+        operator: unchanged_except

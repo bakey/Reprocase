@@ -1,0 +1,19 @@
+case: acme.task.normal-03-callback-scheduling
+category: normal
+solvability:
+  verdict: solvable
+  rationale: Exact owner, date, window, and title are given; calendar.create takes exactly those fields.
+ambiguity_review:
+  reviewed: true
+  notes: The task pins an absolute date/time (no relative wording), keeping the case deterministic.
+answer_separation:
+  checked: true
+  notes: Graders assert the exact event fields; the message states the same facts a human would need.
+wrong_agents:
+  - entrypoint: agents.m9_normal:callback_scheduling_wrong_time
+    expected_failure: >
+      plausible-but-wrong outcome: schedules the callback at 17:00 instead of
+      the requested 10:00 window.
+versions:
+  fixture: /fixtures/acme.json
+data_source: examples/acme-world/fixtures/acme.json
