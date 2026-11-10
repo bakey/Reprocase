@@ -702,6 +702,30 @@
       "title": "ToolPolicyGraderSpec",
       "type": "object"
     },
+    "ToolPolicyOrderingRule": {
+      "additionalProperties": false,
+      "description": "Every completed ``after`` call must be preceded by a completed\n``before`` call (strictly smaller event sequence). Vacuous pass when the\n``after`` tool never completed — the obligation never arose.",
+      "properties": {
+        "after": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "After",
+          "type": "string"
+        },
+        "before": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Before",
+          "type": "string"
+        }
+      },
+      "required": [
+        "before",
+        "after"
+      ],
+      "title": "ToolPolicyOrderingRule",
+      "type": "object"
+    },
     "ToolPolicyPattern": {
       "additionalProperties": false,
       "properties": {
@@ -745,6 +769,14 @@
             "$ref": "#/$defs/ToolPolicyForbiddenRule"
           },
           "title": "Forbidden",
+          "type": "array"
+        },
+        "ordering": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolPolicyOrderingRule"
+          },
+          "title": "Ordering",
           "type": "array"
         },
         "patterns": {

@@ -3,8 +3,14 @@ report (M9 task-pack suite runner).
 
 Each case runs via the installed ``reprocase`` CLI in its own process,
 sidestepping the known same-process package-name collision between example
-directories. Exit code is non-zero when any case does not PASS (gate
-semantics for CI).
+directories. Evidence bundles are kept under ``--runs-root`` (default
+``.reprocase/suite-runs``) so regressions stay investiguable and CI can
+collect them as artifacts.
+
+Verdicts come from each run's own ``result.json`` whenever one exists — a
+FAIL or INVALID run is a valid outcome, not a suite error. Only a missing
+result (e.g. the runner crashed before writing one) becomes an ERROR row.
+Exit code is non-zero when any case does not PASS (gate semantics).
 
 Usage:
     python scripts/run_suite.py examples/acme-world/task-*.yaml
@@ -17,7 +23,6 @@ import argparse
 import json
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +39,7 @@ class CaseOutcome:
     tool_calls: int | None
     model: str | None
     run_id: str
+    bundle: str
 
 
 def _reprocase_binary() -> str:
@@ -44,32 +50,36 @@ def _reprocase_binary() -> str:
 
 
 def _run_case(case: Path, runs_root: Path) -> CaseOutcome:
+    # one output directory per case: the freshest result.json inside it is
+    # unambiguously this case's run, valid for PASS/FAIL/INVALID alike
+    case_output = runs_root / case.stem
+    case_output.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(
-        [_reprocase_binary(), "run", str(case), "--output", str(runs_root)],
+        [_reprocase_binary(), "run", str(case), "--output", str(case_output)],
         capture_output=True,
         text=True,
         cwd=ROOT,
         check=False,
     )
-    if completed.returncode != 0:
-        print(f"[suite] {case.name}: runner exited {completed.returncode}", file=sys.stderr)
+    result_files = sorted(case_output.glob("*/result.json"), key=lambda p: p.stat().st_mtime)
+    if not result_files:
+        print(f"[suite] {case.name}: no result.json (exit {completed.returncode})", file=sys.stderr)
         print(completed.stderr[-2000:], file=sys.stderr)
-        return CaseOutcome(case.name, "ERROR", "RUNNER_ERROR", 0, None, None, "-")
+        return CaseOutcome(case.name, "ERROR", "RUNNER_ERROR", 0, None, None, "-", "-")
 
-    run_dirs = sorted((runs_root).glob("*/result.json"), key=lambda p: p.stat().st_mtime)
-    if not run_dirs:
-        return CaseOutcome(case.name, "ERROR", "NO_RESULT", 0, None, None, "-")
-    result: dict[str, Any] = json.loads(run_dirs[-1].read_text(encoding="utf-8"))
+    result: dict[str, Any] = json.loads(result_files[-1].read_text(encoding="utf-8"))
     usage = result.get("usage") or {}
     agent = result.get("agent") or {}
+    run_id = str(result.get("run_id", "-"))
     return CaseOutcome(
         case=case.name,
-        verdict=result.get("verdict", "UNKNOWN"),
-        status=result.get("status", "UNKNOWN"),
+        verdict=str(result.get("verdict", "UNKNOWN")),
+        status=str(result.get("status", "UNKNOWN")),
         duration_ms=int(result.get("duration_ms", 0)),
         tool_calls=usage.get("tool_calls"),
         model=agent.get("model"),
-        run_id=result.get("run_id", "-"),
+        run_id=run_id,
+        bundle=str(result_files[-1].parent),
     )
 
 
@@ -77,15 +87,17 @@ def _markdown(outcomes: list[CaseOutcome]) -> str:
     lines = [
         "# Task-pack suite report",
         "",
-        "| Case | Verdict | Status | Duration (s) | Tool calls | Model | Run |",
+        "| Case | Verdict | Status | Duration (s) | Tool calls | Model | Evidence |",
         "|---|---|---|---|---|---|---|",
     ]
     for outcome in outcomes:
         duration = f"{outcome.duration_ms / 1000:.1f}"
+        tools = outcome.tool_calls if outcome.tool_calls is not None else "—"
+        model = outcome.model or "—"
+        evidence = f"[{outcome.run_id}]({outcome.bundle})" if outcome.run_id != "-" else "—"
         lines.append(
             f"| {outcome.case} | {outcome.verdict} | {outcome.status} | {duration} "
-            f"| {outcome.tool_calls if outcome.tool_calls is not None else '—'} "
-            f"| {outcome.model or '—'} | {outcome.run_id} |"
+            f"| {tools} | {model} | {evidence} |"
         )
     passed = sum(1 for o in outcomes if o.verdict == "PASS")
     lines += ["", f"**{passed}/{len(outcomes)} cases PASS.**", ""]
@@ -96,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="+", help="EvalCase paths (globs allowed)")
     parser.add_argument("--output", default="suite-report.md", help="Markdown report path")
+    parser.add_argument(
+        "--runs-root",
+        default=".reprocase/suite-runs",
+        help="persistent directory for evidence bundles (kept after the run)",
+    )
     args = parser.parse_args(argv)
 
     cases: list[Path] = []
@@ -109,13 +126,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"no cases match: {pattern}")
         cases.extend(match for match in matches if match.is_file())
 
-    with tempfile.TemporaryDirectory(prefix="reprocase-suite-") as runs_root:
-        outcomes = [_run_case(case, Path(runs_root)) for case in cases]
+    runs_root = Path(args.runs_root)
+    runs_root.mkdir(parents=True, exist_ok=True)
+    outcomes = [_run_case(case, runs_root) for case in cases]
 
     report = _markdown(outcomes)
     Path(args.output).write_text(report, encoding="utf-8")
     print(report)
-    print(f"[suite] report written to {args.output}")
+    print(f"[suite] report written to {args.output}; evidence under {runs_root}/")
     return 0 if all(o.verdict == "PASS" for o in outcomes) else 1
 
 

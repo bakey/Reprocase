@@ -67,6 +67,11 @@ graders:
     policy:
       required:
         - tool: knowledge.search
+      ordering:
+        - before: knowledge.search
+          after: email.send
+        - before: knowledge.search
+          after: ticket.close
 
   - id: bystanders-unchanged
     type: invariant

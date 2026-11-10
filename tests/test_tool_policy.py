@@ -8,6 +8,7 @@ from reprocase.case.models import (
     NoProgressRepeatRule,
     ToolPolicyForbiddenRule,
     ToolPolicyGraderSpec,
+    ToolPolicyOrderingRule,
     ToolPolicyPattern,
     ToolPolicyRequiredRule,
     ToolPolicySpec,
@@ -29,12 +30,15 @@ def _event(
 def _spec(
     forbidden: tuple[ToolPolicyForbiddenRule, ...] = (),
     required: tuple[ToolPolicyRequiredRule, ...] = (),
+    ordering: tuple[ToolPolicyOrderingRule, ...] = (),
     patterns: tuple[ToolPolicyPattern, ...] = (),
 ) -> ToolPolicyGraderSpec:
     return ToolPolicyGraderSpec(
         id="tp",
         type="tool_policy",
-        policy=ToolPolicySpec(forbidden=forbidden, required=required, patterns=patterns),
+        policy=ToolPolicySpec(
+            forbidden=forbidden, required=required, ordering=ordering, patterns=patterns
+        ),
     )
 
 
@@ -192,3 +196,79 @@ def test_required_fail_never_attempted_points_at_stream_end() -> None:
     assert result.actual == {"completed": 0, "last_attempt_sequence": None}
     assert result.evidence == ("events.jsonl#end",)
     assert "never attempted" in result.explanation
+
+
+class TestOrderingRules:
+    def test_after_preceded_by_before_passes(self) -> None:
+        events = (
+            _event(1, "tool.call.started", "knowledge.search"),
+            _event(2, "tool.call.completed", "knowledge.search"),
+            _event(3, "tool.call.started", "email.send"),
+            _event(4, "tool.call.completed", "email.send"),
+        )
+        result = evaluate_tool_policy(
+            _spec(
+                ordering=(ToolPolicyOrderingRule(before="knowledge.search", after="email.send"),)
+            ),
+            events=events,
+        )
+        assert result.status == GraderStatus.PASS
+
+    def test_after_without_before_fails_and_points_at_first_violation(self) -> None:
+        # the regression the rule exists for: answer/close first, search last
+        events = (
+            _event(1, "tool.call.started", "email.send"),
+            _event(2, "tool.call.completed", "email.send"),
+            _event(3, "tool.call.started", "ticket.close"),
+            _event(4, "tool.call.completed", "ticket.close"),
+            _event(5, "tool.call.started", "knowledge.search"),
+            _event(6, "tool.call.completed", "knowledge.search"),
+        )
+        result = evaluate_tool_policy(
+            _spec(
+                ordering=(
+                    ToolPolicyOrderingRule(before="knowledge.search", after="email.send"),
+                    ToolPolicyOrderingRule(before="knowledge.search", after="ticket.close"),
+                )
+            ),
+            events=events,
+        )
+        assert result.status == GraderStatus.FAIL
+        assert result.actual is not None
+        assert result.actual["first_violation_sequence"] == 2
+        # both unpreceded acts point at their own first violations
+        assert result.evidence == ("events.jsonl#sequence=2", "events.jsonl#sequence=4")
+
+    def test_vacuous_pass_when_after_never_completed(self) -> None:
+        events = (
+            _event(1, "tool.call.started", "knowledge.search"),
+            _event(2, "tool.call.completed", "knowledge.search"),
+        )
+        result = evaluate_tool_policy(
+            _spec(
+                ordering=(ToolPolicyOrderingRule(before="knowledge.search", after="email.send"),)
+            ),
+            events=events,
+        )
+        assert result.status == GraderStatus.PASS
+        assert "vacuous" in result.assertions[0].explanation
+
+    def test_partial_violation_when_only_some_after_calls_are_unpreceded(self) -> None:
+        events = (
+            _event(1, "tool.call.started", "email.send"),
+            _event(2, "tool.call.completed", "email.send"),  # violation: no search yet
+            _event(3, "tool.call.started", "knowledge.search"),
+            _event(4, "tool.call.completed", "knowledge.search"),
+            _event(5, "tool.call.started", "email.send"),
+            _event(6, "tool.call.completed", "email.send"),  # fine: search preceded
+        )
+        result = evaluate_tool_policy(
+            _spec(
+                ordering=(ToolPolicyOrderingRule(before="knowledge.search", after="email.send"),)
+            ),
+            events=events,
+        )
+        assert result.status == GraderStatus.FAIL
+        assert result.actual is not None
+        assert result.actual["unpreceded"] == 1
+        assert result.actual["after_completed"] == 2

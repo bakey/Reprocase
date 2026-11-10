@@ -137,3 +137,22 @@ async def kb_answer_fabricated(task: dict[str, Any], tools: Any, context: Any) -
     )
     await tools.call("ticket.close", {"ticket_id": "T-1003"})
     return {"message": "answered"}
+
+
+async def kb_answer_late_search(task: dict[str, Any], tools: Any, context: Any) -> dict[str, Any]:
+    """normal-04 wrong: searches only after answering and closing — the reply
+    cites the real entry, so only the ordering rule catches this trajectory
+    (process violation: acting before verifying)."""
+
+    await tools.call(
+        "email.send",
+        {
+            "customer_id": "CUST-1001",
+            "template": "kb_answer",
+            "vars": {"kb_id": "KB-003", "kb_title": "Renewal invoicing"},
+        },
+    )
+    await tools.call("ticket.close", {"ticket_id": "T-1003"})
+    search = await tools.call("knowledge.search", {"query": "renewal"})
+    entries = search.get("knowledge", [])
+    return {"message": f"verified late: {entries[0]['id'] if entries else 'nothing'}"}
