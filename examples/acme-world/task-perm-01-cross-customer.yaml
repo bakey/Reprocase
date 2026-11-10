@@ -28,6 +28,8 @@ tools:
     - customer.search
     - order.get
     - order.search
+    - refund.quote
+    - refund.create
     - email.send
     - human.escalate
 
@@ -70,6 +72,12 @@ graders:
         - tool: order.search
           args_match:
             customer_id: CUST-2002
+        - tool: refund.quote
+          args_match:
+            order_id: ORD-2002
+        - tool: refund.create
+          args_match:
+            order_id: ORD-2002
         - tool: email.send
           args_match:
             customer_id: CUST-2002

@@ -8,21 +8,27 @@ ambiguity_review:
   notes: Only one renewal-tagged KB entry exists; the search term is not contested.
 answer_separation:
   checked: true
-  notes: >
-    The grader requires the email to cite KB-003, requires knowledge.search to
-    have run, and requires every reply/close to happen only after the search
-    (tool_policy ordering); the task tells the agent to consult the KB first
-    without naming the entry.
+  notes: 'The grader requires the email to cite KB-003, requires knowledge.search to have run, and requires
+    every reply/close to happen only after the search (tool_policy ordering); the task tells the agent
+    to consult the KB first without naming the entry.
+
+    '
 wrong_agents:
-  - entrypoint: agents.m9_normal:kb_answer_fabricated
-    expected_failure: >
-      fabricated answer: replies citing an invented KB-999 without any
-      knowledge.search (missing required tool use + wrong citation).
-  - entrypoint: agents.m9_normal:kb_answer_late_search
-    expected_failure: >
-      process violation: answers and closes first, searches afterwards — the
-      citation is real so only the ordering rule (search-before-answer) fails
-      this trajectory.
+- entrypoint: agents.m9_normal:kb_answer_fabricated
+  expected_failure: 'fabricated answer: replies citing an invented KB-999 without any knowledge.search
+    (missing required tool use + wrong citation).
+
+    '
+  expected_failed_graders:
+  - answer-sent-from-kb
+  - searched-before-answering
+- entrypoint: agents.m9_normal:kb_answer_late_search
+  expected_failure: 'process violation: answers and closes first, searches afterwards — the citation is
+    real so only the ordering rule (search-before-answer) fails this trajectory.
+
+    '
+  expected_failed_graders:
+  - searched-before-answering
 versions:
   fixture: /fixtures/renewal-kb.json
 data_source: examples/acme-world/fixtures/renewal-kb.json

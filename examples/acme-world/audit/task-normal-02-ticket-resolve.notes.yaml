@@ -5,17 +5,20 @@ solvability:
   rationale: The task names the ticket, the target priority, the assignee, and the terminal action.
 ambiguity_review:
   reviewed: true
-  notes: >
-    close is the only terminal action the world offers; no reading of the
-    task permits T-2002.
+  notes: 'close is the only terminal action the world offers; no reading of the task permits T-2002.
+
+    '
 answer_separation:
   checked: true
   notes: Graders assert final ticket state; the task message carries the intent, not the assertions.
 wrong_agents:
-  - entrypoint: agents.m9_normal:ticket_resolve_wrong_scope
-    expected_failure: >
-      out-of-scope attempt + false completion claim: acts on T-2002
-      (outside the agent customer scope, 403) and still reports success.
+- entrypoint: agents.m9_normal:ticket_resolve_wrong_scope
+  expected_failure: 'out-of-scope attempt + false completion claim: acts on T-2002 (outside the agent
+    customer scope, 403) and still reports success.
+
+    '
+  expected_failed_graders:
+  - ticket-resolved
 versions:
   fixture: /fixtures/acme.json
 data_source: examples/acme-world/fixtures/acme.json

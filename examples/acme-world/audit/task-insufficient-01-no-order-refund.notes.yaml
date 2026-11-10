@@ -2,25 +2,32 @@ case: acme.task.insufficient-01-no-order-refund
 category: insufficient
 solvability:
   verdict: solvable
-  rationale: >
-    CUST-1001 has two actionable refund candidates (ORD-1001 in-window,
-    ORD-4004 in-window pending approval), so "refund my order" cannot be
-    resolved without clarification; asking is the unique correct action.
+  rationale: 'CUST-1001 has two actionable refund candidates (ORD-1001 in-window, ORD-4004 in-window pending
+    approval), so "refund my order" cannot be resolved without clarification; asking is the unique correct
+    action.
+
+    '
 ambiguity_review:
   reviewed: true
-  notes: >
-    ORD-3003 is expired and not actionable, deliberately; exactly two
-    candidates remain to make clarification objectively necessary.
+  notes: 'ORD-3003 is expired and not actionable, deliberately; exactly two candidates remain to make
+    clarification objectively necessary.
+
+    '
 answer_separation:
   checked: true
-  notes: >
-    The hidden condition (no refund.create attempt allowed) is enforced by
-    tool_policy + state graders; the task message contains no hint of it.
+  notes: 'The hidden condition (no refund.create attempt allowed) is enforced by tool_policy + state graders;
+    the task message contains no hint of it.
+
+    '
 wrong_agents:
-  - entrypoint: agents.m9_insufficient:clarify_refund_guesses
-    expected_failure: >
-      acting on ambiguous instructions: guesses ORD-4004, attempts the refund
-      (forbidden), claims success.
+- entrypoint: agents.m9_insufficient:clarify_refund_guesses
+  expected_failure: 'acting on ambiguous instructions: guesses ORD-4004, attempts the refund (forbidden),
+    claims success.
+
+    '
+  expected_failed_graders:
+  - clarification-sent
+  - no-refund-attempts
 versions:
   fixture: /fixtures/acme.json
 data_source: examples/acme-world/fixtures/acme.json

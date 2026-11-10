@@ -34,6 +34,7 @@ def _tasks() -> list[dict[str, Any]]:
                     "case_id": note["case"],
                     "wrong": wrong["entrypoint"],
                     "failure": wrong["expected_failure"],
+                    "expected_failed_graders": wrong["expected_failed_graders"],
                 }
             )
     return tasks
@@ -63,6 +64,15 @@ def test_reference_passes_and_wrong_fails(task: dict[str, Any], tmp_path: Path) 
     assert wrong.verdict == Verdict.FAIL, (
         f"wrong agent {task['wrong']!r} unexpectedly PASSED on {task['case_id']}"
     )
+    # failure fidelity: the wrong agent must COMPLETE and land its claim in the
+    # evidence — the designed story is "the lie gets caught by graders", not
+    # "the agent crashes on the rejected call" (agent.failed would make the
+    # fabricated-completion pattern invisible to the failure catalog)
+    assert wrong.agent_output is not None, (
+        f"wrong agent {task['wrong']!r} crashed instead of completing with its "
+        f"claim on {task['case_id']}; primary: "
+        f"{wrong.primary_failure.model_dump() if wrong.primary_failure else 'graders'}"
+    )
     failed_graders = [
         g.grader_id if hasattr(g, "grader_id") else str(g)
         for g in wrong.graders
@@ -70,6 +80,13 @@ def test_reference_passes_and_wrong_fails(task: dict[str, Any], tmp_path: Path) 
     ]
     assert failed_graders, (
         f"wrong agent {task['wrong']!r} failed without any failing grader on {task['case_id']}"
+    )
+    # the declared failure mechanism, executable: every grader the note
+    # promises to trip must actually be in the failed set
+    missing = [grader for grader in task["expected_failed_graders"] if grader not in failed_graders]
+    assert not missing, (
+        f"wrong agent {task['wrong']!r} on {task['case_id']} did not trip the "
+        f"declared grader(s) {missing}; failed set was {failed_graders}"
     )
 
     # digest discipline: same case file -> identical case digest across both runs
