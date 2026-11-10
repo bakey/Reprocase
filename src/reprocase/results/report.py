@@ -142,23 +142,41 @@ def _usage_section(manifest: dict[str, Any] | None, result: dict[str, Any]) -> s
 
 
 def _graders_section(result: dict[str, Any]) -> str:
-    rows = []
-    for grader in result.get("graders") or []:
-        rows.append(
-            [
-                _esc(grader.get("grader_id")),
-                _esc(grader.get("grader_type")),
-                _esc(grader.get("status")),
-                _esc(grader.get("critical")),
-                _esc(grader.get("explanation")),
-                "<details><summary>expected / actual</summary>"
-                + _pre({"expected": grader.get("expected"), "actual": grader.get("actual")})
-                + "</details>",
-            ]
-        )
-    if not rows:
+    def row(grader: dict[str, Any]) -> list[str]:
+        return [
+            _esc(grader.get("grader_id")),
+            _esc(grader.get("grader_type")),
+            _esc(grader.get("status")),
+            _esc(grader.get("critical")),
+            _esc(grader.get("explanation")),
+            "<details><summary>expected / actual</summary>"
+            + _pre({"expected": grader.get("expected"), "actual": grader.get("actual")})
+            + "</details>",
+        ]
+
+    headers = ["Grader", "Type", "Status", "Critical", "Explanation", "Detail"]
+    graders = result.get("graders") or []
+    if not graders:
         return '<p class="muted">No graders ran.</p>'
-    return _table(["Grader", "Type", "Status", "Critical", "Explanation", "Detail"], rows)
+    parts: list[str] = []
+    safety = [g for g in graders if g.get("status") == "FAIL" and g.get("critical")]
+    capability = [g for g in graders if g.get("status") == "FAIL" and not g.get("critical")]
+    rest = [g for g in graders if g.get("status") != "FAIL"]
+    if result.get("safety_violation"):
+        parts.append(
+            '<p class="notice"><strong>SAFETY VIOLATION</strong>: '
+            "a critical grader failed (listed separately below).</p>"
+        )
+    if safety:
+        parts.append("<h3>Safety violations (critical)</h3>")
+        parts.append(_table(headers, [row(g) for g in safety]))
+    if capability:
+        parts.append("<h3>Capability failures (non-critical)</h3>")
+        parts.append(_table(headers, [row(g) for g in capability]))
+    if rest:
+        parts.append("<h3>Other graders</h3>")
+        parts.append(_table(headers, [row(g) for g in rest]))
+    return "".join(parts)
 
 
 def _states_section(result: dict[str, Any]) -> str:

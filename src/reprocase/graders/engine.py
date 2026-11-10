@@ -7,12 +7,18 @@ from typing import Any
 from reprocase.case.models import (
     FakeGraderSpec,
     GraderSpec,
+    InvariantGraderSpec,
     StateAssertionGraderSpec,
+    TemporalConstraintGraderSpec,
     TestCommandGraderSpec,
+    ToolPolicyGraderSpec,
 )
+from reprocase.graders.invariant import evaluate_invariant
 from reprocase.graders.protocol import ExecFn, GraderContext
 from reprocase.graders.state_assertion import evaluate_state_assertions
+from reprocase.graders.temporal import evaluate_temporal_constraints
 from reprocase.graders.test_command import TestCommandGrader
+from reprocase.graders.tool_policy import evaluate_tool_policy
 from reprocase.recording.artifacts import ArtifactStore
 from reprocase.recording.events import EventRecorder
 from reprocase.results.models import GraderResult, GraderStatus
@@ -42,6 +48,16 @@ async def run_graders(
             elif isinstance(spec, TestCommandGraderSpec):
                 grader = TestCommandGrader(spec, exec_fn=exec_fn, artifacts=artifacts)
                 graded = await grader.grade(context)
+            elif isinstance(spec, InvariantGraderSpec):
+                graded = evaluate_invariant(
+                    spec,
+                    initial_document=context.initial_document,
+                    final_document=context.final_document,
+                )
+            elif isinstance(spec, TemporalConstraintGraderSpec):
+                graded = evaluate_temporal_constraints(spec, final_document=context.final_document)
+            elif isinstance(spec, ToolPolicyGraderSpec):
+                graded = evaluate_tool_policy(spec, events=context.events)
             else:  # pragma: no cover - defensive against future spec types
                 raise TypeError(f"unsupported grader spec: {type(spec).__name__}")
         except Exception as exc:  # a broken grader is an ERROR, never an agent FAIL

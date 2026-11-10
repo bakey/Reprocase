@@ -256,6 +256,8 @@ class _RunSession:
 
 def _record_grader_failures(draft: _RunDraft) -> None:
     for graded in draft.graders:
+        for warning in graded.warnings:
+            draft.warnings.append(f"{graded.grader_id}: {warning}")
         if graded.status == GraderStatus.ERROR:
             code = (
                 FailureCode.GRADER_FAKE_EXECUTION_FAILED
@@ -271,11 +273,12 @@ def _record_grader_failures(draft: _RunDraft) -> None:
                 )
             )
         elif graded.status == GraderStatus.FAIL:
-            code = (
-                FailureCode.TEST_COMMAND_FAILED
-                if graded.grader_type == "test_command"
-                else FailureCode.GRADER_ASSERTION_FAILED
-            )
+            code = {
+                "test_command": FailureCode.TEST_COMMAND_FAILED,
+                "invariant": FailureCode.INVARIANT_VIOLATED,
+                "temporal_constraint": FailureCode.TEMPORAL_CONSTRAINT_VIOLATED,
+                "tool_policy": FailureCode.TOOL_POLICY_VIOLATED,
+            }.get(graded.grader_type, FailureCode.GRADER_ASSERTION_FAILED)
             draft.failures.append(
                 FailureRecord(
                     attribution=FailureAttribution.AGENT_FAILURE,
@@ -778,6 +781,12 @@ async def _execute_compose(
             )
 
         session.transition(RunState.GRADING)
+        events_path = storage.events_path
+        recorded_events: tuple[dict[str, Any], ...] = ()
+        if events_path.is_file():
+            recorded_events = tuple(
+                json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+            )
         grader_context = GraderContext(
             run_id=run_id,
             initial_snapshot=initial_snapshot,
@@ -786,6 +795,7 @@ async def _execute_compose(
             final_document=final_document,
             diff_ref=draft.state_diff_ref,
             agent_error=draft.agent_error,
+            events=recorded_events,
         )
 
         async def exec_fn(service: str, argv: list[str], timeout: float) -> CommandResult:
@@ -1177,6 +1187,9 @@ def run_case(
         secondary_failures=tuple(draft.failures[1:]),
         cleanup_required=draft.cleanup_required,
         cleanup_command=draft.cleanup_command,
+        safety_violation=any(
+            graded.status == GraderStatus.FAIL and graded.critical for graded in draft.graders
+        ),
         warnings=tuple(warnings),
     )
     storage.write_result(result)
