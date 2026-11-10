@@ -17,6 +17,7 @@ Model non-determinism is expected; verdict determinism comes from graders.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from reprocase.agents.protocol import AgentResult
+from reprocase.errors import FailureCode
 from reprocase.results.models import Usage
 from reprocase.tools.broker import ToolCallError
 
@@ -49,15 +51,41 @@ class LLMConfig:
     model: str
 
 
-def resolve_config(profile: str | None = None) -> LLMConfig:
-    """Resolve the model configuration from the environment, failing fast."""
+def _profile_prefix(profile: str | None = None) -> tuple[str, str]:
+    """Validate the profile name and return (profile, env prefix)."""
 
     chosen = (profile or os.environ.get("REPROCASE_LLM_PROFILE") or "primary").lower()
     if chosen not in {"primary", "secondary"}:
         raise RuntimeError(
             f"REPROCASE_LLM_PROFILE must be 'primary' or 'secondary', got {chosen!r}"
         )
-    prefix = "REPROCASE_LLM" if chosen == "primary" else "REPROCASE_LLM2"
+    return chosen, "REPROCASE_LLM" if chosen == "primary" else "REPROCASE_LLM2"
+
+
+def preflight() -> None:
+    """Runtime prerequisites; the runner calls this before provisioning.
+
+    A missing configuration is a case/run configuration error, never an
+    agent capability failure, so it must fail fast (INVALID) before any
+    environment is started.
+    """
+
+    chosen, prefix = _profile_prefix()
+    missing = [
+        var
+        for var in (f"{prefix}_BASE_URL", f"{prefix}_API_KEY", f"{prefix}_MODEL")
+        if not os.environ.get(var)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"LLM agent profile {chosen!r} is not configured; set {', '.join(missing)}"
+        )
+
+
+def resolve_config(profile: str | None = None) -> LLMConfig:
+    """Resolve the model configuration from the environment, failing fast."""
+
+    chosen, prefix = _profile_prefix(profile)
     missing = [
         var
         for var in (f"{prefix}_BASE_URL", f"{prefix}_API_KEY", f"{prefix}_MODEL")
@@ -114,6 +142,9 @@ def _chat_request(config: LLMConfig, body: dict[str, Any]) -> dict[str, Any]:
             if exc.code not in {429, 500, 502, 503, 504} or attempt == _MAX_RETRIES:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
                 raise RuntimeError(f"LLM API HTTP {exc.code}: {detail}") from exc
+            # drain the discarded response so the retry does not leak the socket
+            with contextlib.suppress(OSError, ValueError):
+                exc.read()
             last_error = exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt == _MAX_RETRIES:
@@ -208,7 +239,7 @@ async def run(task: dict[str, Any], tools: Any, context: Any) -> AgentResult:
             try:
                 result = await tools.call(name, arguments)
             except ToolCallError as exc:
-                if str(exc.code) == "AGENT_BUDGET_EXCEEDED":
+                if exc.code == FailureCode.AGENT_BUDGET_EXCEEDED:
                     # return gracefully: the runner records the budget failure
                     # as the primary agent failure (precedent: scripted agents)
                     return AgentResult(

@@ -948,6 +948,32 @@ async def _execute_compose(
                     raise asyncio.CancelledError  # preserve the user's cancellation state
 
 
+def _preflight_agent(entrypoint: str, import_root: Path) -> None:
+    """Run the agent module's optional ``preflight()`` before provisioning.
+
+    Agents backed by external services (e.g. the M8 LLM agent) declare their
+    runtime prerequisites this way. Failing here — before any environment is
+    started — keeps a misconfigured run a CASE error (INVALID), never an
+    agent capability failure, and avoids paying for provisioning.
+    """
+
+    module_name = entrypoint.partition(":")[0]
+    try:
+        preflight = load_callable(f"{module_name}:preflight", import_root)
+    except ReprocaseError:
+        return  # the module declares no preflight; nothing to check
+    try:
+        preflight()
+    except ReprocaseError:
+        raise
+    except Exception as exc:
+        raise CaseValidationError(
+            f"agent preflight failed for module {module_name!r}: {exc}",
+            code=FailureCode.CASE_AGENT_PREFLIGHT_FAILED,
+            details={"module": module_name, "error": str(exc)},
+        ) from exc
+
+
 def _validate_run_request(loaded: LoadedCase, agent_override: str | None) -> str | None:
     """Return the effective agent entrypoint, or None for the fake flow."""
 
@@ -1074,11 +1100,14 @@ def run_case(
         if is_fake:
             _execute_fake(session, loaded, draft)
         else:
+            assert entrypoint is not None
+            # runtime prerequisites fail before provisioning: a missing LLM
+            # configuration is a CASE error (INVALID), never an agent failure
+            _preflight_agent(entrypoint, loaded.environment_path.parent)
             assert isinstance(loaded.environment, ComposeEnvironmentDefinition)
             compose_file = loaded.compose_path or resolve_compose_file(
                 loaded.environment, loaded.environment_path.parent
             )
-            assert entrypoint is not None
             _run_loop(
                 _execute_compose(
                     session,

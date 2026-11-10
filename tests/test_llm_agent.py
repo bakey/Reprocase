@@ -310,7 +310,79 @@ class TestScrubSecrets:
         assert "sk-live-abcdef123" not in json.dumps(scrubbed)
         assert scrubbed["nested"][0]["x"] == "[REDACTED]"
 
-    def test_degenerate_values_ignored(self) -> None:
+    def test_short_dev_placeholders_do_not_shred_words(self) -> None:
         from reprocase.tools.redaction import scrub_secrets
 
-        assert scrub_secrets("ab", ["a"]) == "ab"
+        # placeholders shorter than 8 characters must be ignored wholesale, or
+        # ordinary words ("latest", "testing", "contest") get shredded
+        text = "latest testing results for the contest"
+        assert scrub_secrets(text, ["test", "1234", "demo", "a"]) == text
+        # an 8+ character value that really occurs is still scrubbed
+        assert scrub_secrets(text, ["testing"]) == text  # 7 chars: ignored
+        assert "[REDACTED]" in scrub_secrets(text, ["testing "])  # 8 chars: scrubbed
+
+
+class TestPreflight:
+    def test_preflight_passes_when_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with ImportIsolation(ACME_DIR):
+            llm = importlib.import_module("agents.llm_agent")
+        monkeypatch.setenv("REPROCASE_LLM_BASE_URL", "http://x/v1")
+        monkeypatch.setenv("REPROCASE_LLM_API_KEY", "sk-anything")
+        monkeypatch.setenv("REPROCASE_LLM_MODEL", "m")
+        llm.preflight()  # must not raise
+
+    def test_preflight_lists_missing_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with ImportIsolation(ACME_DIR):
+            llm = importlib.import_module("agents.llm_agent")
+        for var in (
+            "REPROCASE_LLM_BASE_URL",
+            "REPROCASE_LLM_API_KEY",
+            "REPROCASE_LLM_MODEL",
+            "REPROCASE_LLM_PROFILE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        with pytest.raises(RuntimeError, match=r"not configured.*REPROCASE_LLM_BASE_URL"):
+            llm.preflight()
+
+    def test_preflight_honors_secondary_profile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with ImportIsolation(ACME_DIR):
+            llm = importlib.import_module("agents.llm_agent")
+        for var in (
+            "REPROCASE_LLM_BASE_URL",
+            "REPROCASE_LLM_API_KEY",
+            "REPROCASE_LLM_MODEL",
+            "REPROCASE_LLM2_BASE_URL",
+            "REPROCASE_LLM2_API_KEY",
+            "REPROCASE_LLM2_MODEL",
+            "REPROCASE_LLM_PROFILE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("REPROCASE_LLM_PROFILE", "secondary")
+        monkeypatch.setenv("REPROCASE_LLM2_BASE_URL", "http://x/v1")
+        monkeypatch.setenv("REPROCASE_LLM2_MODEL", "m")
+        # API key still missing: preflight must name the secondary variable
+        with pytest.raises(RuntimeError, match="REPROCASE_LLM2_API_KEY"):
+            llm.preflight()
+
+    def test_unconfigured_llm_case_is_invalid_not_agent_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reprocase.errors import FailureAttribution, FailureCode
+        from reprocase.results.models import Verdict
+        from reprocase.runner.orchestrator import run_case
+
+        for var in (
+            "REPROCASE_LLM_BASE_URL",
+            "REPROCASE_LLM_API_KEY",
+            "REPROCASE_LLM_MODEL",
+            "REPROCASE_LLM_PROFILE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        result = run_case(ACME_DIR / "refund-smoke-llm.yaml", tmp_path / "runs")
+        assert result.verdict == Verdict.INVALID
+        assert result.primary_failure is not None
+        assert result.primary_failure.code == FailureCode.CASE_AGENT_PREFLIGHT_FAILED
+        assert result.primary_failure.attribution == FailureAttribution.CASE_ERROR
+        # fail-fast: no environment was provisioned, so no docker is required
+        # for this run at all
+        assert result.states == ()

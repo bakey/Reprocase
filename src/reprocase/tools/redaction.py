@@ -31,10 +31,12 @@ def scrub_secrets(value: Any, secrets: tuple[str, ...] | list[str]) -> Any:
     string of an arbitrary JSON-like structure. Key-based redaction cannot
     catch a secret echoed into free text (e.g. a model repeating an API key),
     so the runner also scrubs the concrete secret values it knows from the
-    environment. Degenerate values (short or empty) are ignored.
+    environment. Values shorter than 8 characters are ignored: real API keys
+    are far longer, and scrubbing short dev placeholders (e.g. "test") would
+    shred ordinary words and destroy evidence readability.
     """
 
-    usable = [secret for secret in secrets if secret and len(secret) >= 4]
+    usable = [secret for secret in secrets if secret and len(secret) >= 8]
 
     def walk(node: Any) -> Any:
         if isinstance(node, str):
